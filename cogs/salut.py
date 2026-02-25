@@ -9,7 +9,7 @@ class Salut(commands.Cog):
     # et la fonction prend "self" comme premier argument !
     @commands.command()
     async def salut(self, ctx):
-        await ctx.send(f'Salut {ctx.author.name} !')
+        await ctx.send(f'Salut {ctx.author.display_name} !')
 
 # Obligatoire à la fin de chaque fichier Cog
 # Permet au fichier principal d'ajouter ce module au bot
