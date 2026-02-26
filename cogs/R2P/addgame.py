@@ -58,14 +58,14 @@ class AddGame(commands.Cog):
         self.bot = bot
     
     @app_commands.command(name='addgame', description='Ajoute des jeux à ta bibliothèque (virgule entre chaque titre)')
-    async def addgame(self, interaction:discord.Interaction, entree:str):
+    async def addgame(self, interaction:discord.Interaction, Jeux:str):
 
         player = interaction.user.name
         validation_message=""
         load_data()
 
         # Création d'une liste avec le titre de chaque jeu
-        title_list=[title.strip() for title in entree.split(",") if title.strip()]
+        title_list=[title.strip() for title in Jeux.split(",") if title.strip()]
         if not title_list:
             await interaction.response.send_message("Aucun titre de jeu reçu", ephemeral=True)
             return
