@@ -1,7 +1,7 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
-from manage_libraries import *
+from cogs.R2P.manage_libraries import *
 
 
 class AddGame(commands.Cog):
@@ -9,14 +9,14 @@ class AddGame(commands.Cog):
         self.bot = bot
     
     @app_commands.command(name='addgame', description='Ajoute des jeux à ta bibliothèque (virgule entre chaque titre)')
-    async def addgame(self, interaction:discord.Interaction, Jeux:str):
+    async def addgame(self, interaction:discord.Interaction, jeux:str):
 
         player = interaction.user.name
         validation_message=""
         load_data()
 
         # Création d'une liste avec le titre de chaque jeu
-        title_list=[title.strip() for title in Jeux.split(",") if title.strip()]
+        title_list=[title.strip() for title in jeux.split(",") if title.strip()]
         if not title_list:
             await interaction.response.send_message("Aucun titre de jeu reçu", ephemeral=True)
             return
