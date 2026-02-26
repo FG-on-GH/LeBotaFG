@@ -3,6 +3,10 @@
 ##
 ## Get latest from https://github.com/github/gitignore/blob/main/VisualStudio.gitignore
 
+# FG added those
+/cogs/R2P/game_libraries.json
+
+
 # User-specific files
 *.rsuser
 *.suo
