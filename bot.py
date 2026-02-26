@@ -22,16 +22,13 @@ class LeBotaFG(commands.Bot):
         for root, dirs, files in os.walk("./cogs"):
             for filename in files:
                 if filename.endswith(".py"):
-                    # On transforme le chemin du fichier en format "cogs.sous_dossier.fichier"
-                    # os.path.relpath nous donne le chemin relatif (ex: cogs/music/play.py)
                     path = os.path.relpath(os.path.join(root, filename), ".")
                     extension = path.replace(os.sep, ".")[:-3]
-                    
                     try:
                         await bot.load_extension(extension)
-                        print(f"✅ Chargé : {extension}")
+                        print(f"{extension} - chargé")
                     except Exception as e:
-                        print(f"❌ Erreur sur {extension} : {e}")
+                        print(f"{extension} - erreur : {e}")
             
         await self.tree.sync()
         print("Slash-commands synced")
