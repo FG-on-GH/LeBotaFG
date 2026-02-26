@@ -19,12 +19,20 @@ class LeBotaFG(commands.Bot):
     # setup_hook appelée automatiquement juste avant que le bot se connecte
     async def setup_hook(self):
         # Parcourt des fichiers du dossier cogs
-        for filename in os.listdir('./cogs'):
-            if filename.endswith('.py'):
-                # Si le fichier est un python on charge l'extension
-                await self.load_extension(f'cogs.{filename[:-3]}')
-                print(f"Cog chargé : {filename}")
-        
+        for root, dirs, files in os.walk("./cogs"):
+            for filename in files:
+                if filename.endswith(".py"):
+                    # On transforme le chemin du fichier en format "cogs.sous_dossier.fichier"
+                    # os.path.relpath nous donne le chemin relatif (ex: cogs/music/play.py)
+                    path = os.path.relpath(os.path.join(root, filename), ".")
+                    extension = path.replace(os.sep, ".")[:-3]
+                    
+                    try:
+                        await bot.load_extension(extension)
+                        print(f"✅ Chargé : {extension}")
+                    except Exception as e:
+                        print(f"❌ Erreur sur {extension} : {e}")
+            
         await self.tree.sync()
         print("Slash-commands synced")
 
