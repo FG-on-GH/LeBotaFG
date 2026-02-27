@@ -95,7 +95,7 @@ class ready(commands.Cog):
                 for id in excluded_users:
                     annoucement+=f"<@{id}>, "
                 annoucement=annoucement[:-2]
-                annoucement+=f"\nUtilisez /addgame pour en ajouter puis refaites /ready pour relancer la recherche"
+                annoucement+=f"\nUtilisez `/addgame` pour en ajouter puis refaites `/ready` pour relancer la recherche"
         if last_announcement_id:
             try:
                 old_msg = await channel.fetch_message(last_announcement_id)
@@ -106,6 +106,97 @@ class ready(commands.Cog):
         new_msg = await channel.send(annoucement)
         last_announcement_id = new_msg.id
         save_last_announcement(last_announcement_id)
+
+    @app_commands.command(name="unready", description="Te retire de la liste des personnes prêtes à jouer")
+    async def unready(self, interaction: discord.Interaction):
+        playerID = interaction.user.id
+        
+        # 1. Vérification
+        if playerID not in readies:
+            await interaction.response.send_message("Tu n'étais pas dans la liste des joueurs prêts.", ephemeral=True)
+            return
+
+        # 2. Retrait de la liste
+        readies.remove(playerID)
+        await interaction.response.send_message("Tu as bien été retiré de la liste des joueurs prêts.", ephemeral=True)
+
+        # 3. Préparation des variables pour le salon d'annonce
+        last_announcement_id = load_last_annoucement()
+        ready_channel_ID = int(os.getenv('READY_CHANNEL_ID'))
+        channel = self.bot.get_channel(ready_channel_ID)
+
+        # 4. Génération du nouveau message selon le nombre de joueurs restants
+        if len(readies) == 0:
+            annoucement = "Personne n'est prêt pour le moment. Utilisez `/ready` pour vous ajouter."
+        elif len(readies) == 1:
+            annoucement = f"<@{readies[0]}> est prêt à jouer !"
+        else:
+            ready_mentions = ""
+            for IDs in readies:
+                ready_mentions += f"<@{IDs}>, "
+            ready_mentions = ready_mentions[:-2]
+            
+            annoucement = f"Joueurs prêts :\n{ready_mentions}"
+            
+            # Recalcul des jeux en commun
+            (prettyprint_common_games, excluded_users) = find_common_games()
+            
+            if not prettyprint_common_games:
+                annoucement += "\nAucun jeu en commun trouvé"
+            else:
+                annoucement += f"\nJeux en commun :\n"
+                for title in prettyprint_common_games:
+                    annoucement += f"{title}, "
+                annoucement = annoucement[:-2]
+                
+            if excluded_users:
+                annoucement += f"\nJoueurs exclus de la recherche (bibliothèque vide) :\n"
+                for id in excluded_users:
+                    annoucement += f"<@{id}>, "
+                annoucement = annoucement[:-2]
+                annoucement += f"\nUtilisez /addgame pour en ajouter puis refaites /ready pour relancer la recherche"
+
+        # 5. Remplacement de l'ancien message
+        if last_announcement_id:
+            try:
+                old_msg = await channel.fetch_message(last_announcement_id)
+                await old_msg.delete()
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
+                
+        new_msg = await channel.send(annoucement)
+        save_last_announcement(new_msg.id)
+    
+    @commands.Cog.listener()
+    async def on_ready(self):
+        
+        # 1. On s'assure que la liste est bien vide au démarrage
+        readies.clear()
+        
+        # 2. On récupère le salon et l'ancien ID
+        last_announcement_id = load_last_annoucement()
+        ready_channel_ID = int(os.getenv('READY_CHANNEL_ID'))
+        channel = self.bot.get_channel(ready_channel_ID)
+        
+        if channel is None:
+            print("Attention : Salon d'annonce introuvable au démarrage.")
+            return
+
+        # 3. Suppression de l'ancienne annonce
+        if last_announcement_id:
+            try:
+                old_msg = await channel.fetch_message(last_announcement_id)
+                await old_msg.delete()
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                # Le message a peut-être déjà été supprimé manuellement
+                pass
+        
+        # 4. Envoi du nouveau message de remise à zéro
+        announcement = "Personne n'est prêt pour le moment. Utilisez `/ready` pour vous ajouter."
+        new_msg = await channel.send(announcement)
+        
+        # 5. Sauvegarde du nouvel ID
+        save_last_announcement(new_msg.id)
 
         
 
