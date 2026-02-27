@@ -216,6 +216,11 @@ class ready(commands.Cog):
             
             if user_id in self.offline_timers:
                 del self.offline_timers[user_id]
+            
+            # On annule le timer global de 4h si le joueur est viré pour inactivité
+            if user_id in self.timeout_timers:
+                self.timeout_timers[user_id].cancel()
+                del self.timeout_timers[user_id]
                 
             # On met à jour l'annonce pour refléter son départ
             await self.update_announcement()
