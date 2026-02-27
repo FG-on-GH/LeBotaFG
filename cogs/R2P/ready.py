@@ -5,6 +5,7 @@ import os
 from dotenv import load_dotenv
 from cogs.R2P.manage_libraries import *
 import asyncio
+import re
 
 load_dotenv()
 
@@ -67,6 +68,8 @@ class ready(commands.Cog):
         load_data()
         self.offline_timers = {}
         self.timeout_timers = {}
+        self.pending_timers = {}
+        self.grace_timers = {}
     
     async def update_announcement(self):
         """Génère l'annonce sous forme d'Embed, supprime l'ancienne et envoie la nouvelle."""
@@ -135,20 +138,55 @@ class ready(commands.Cog):
         save_last_announcement(new_msg.id)
 
     @app_commands.command(name="ready", description="T'ajoute à la liste des personnes prêtes à jouer")
-    async def ready(self, interaction: discord.Interaction):
-        playerID = interaction.user.id
-        if playerID not in readies:
-            readies.append(playerID)
+    @app_commands.describe(delai="Dans combien de temps es-tu dispo ? (ex: 15m, 1h30, 90)")
+    async def ready(self, interaction: discord.Interaction, delai: str = None):
+        user_id = interaction.user.id
         
-        # Gestion du timer de 4h
-        # Si le joueur avait déjà un timer en cours (s'il refait /ready), on le réinitialise
-        if playerID in self.timeout_timers:
-            self.timeout_timers[playerID].cancel()
+        # On nettoie tous ses anciens compteurs pour repartir à zéro
+        self.cancel_all_timers(user_id)
         
-        # On lance le chronomètre de 4h
-        self.timeout_timers[playerID] = asyncio.create_task(self.auto_remove_timeout(playerID))
+        # Cas 1 : L'utilisateur a précisé un délai
+        if delai and delai!="0":
+            delay_sec = self.parse_time(delai)
+            
+            # Sécurité 1 : Le format n'a pas été compris (retourne 0)
+            if delay_sec == 0:
+                await interaction.response.send_message(
+                    ":x: Je n'ai pas compris le format du temps. Utilise par exemple : `15m`, `1h30`, `90` ou `2 heures`.", 
+                    ephemeral=True
+                )
+                return # On arrête l'exécution ici, il n'est pas ajouté
+                
+            # Sécurité 2 : Le délai dépasse 6 heures (6 * 3600 = 21600 secondes)
+            if delay_sec > 21600:
+                await interaction.response.send_message(
+                    ":hourglass: C'est un peu trop pour ma mémoire ! Tu ne peux pas prévoir une session plus de 6 heures à l'avance.", 
+                    ephemeral=True
+                )
+                return # On arrête l'exécution ici
+                
+            # Si tout est bon, on lance l'attente
+            self.pending_timers[user_id] = asyncio.create_task(self.delayed_ready(interaction.user, delay_sec))
+            
+            # Petit calcul pour un affichage propre dans le message de confirmation
+            heures = delay_sec // 3600
+            minutes = (delay_sec % 3600) // 60
+            temps_str = f"{heures}h{minutes:02d}" if heures > 0 else f"{minutes} minute(s)"
+            
+            await interaction.response.send_message(
+                f":white_check_mark: C'est noté ! Je t'ajouterai à la liste dans {temps_str} si tu es toujours connecté à ce moment là.", 
+                ephemeral=True
+            )
+            return # Le processus s'arrête là, le reste se fera dans `delayed_ready`
+                
+        # Cas 2 : Ajout immédiat (aucun argument "delai" fourni)
+        if user_id not in readies:
+            readies.append(user_id)
+            
+        # On lance les 4h de présence max
+        self.timeout_timers[user_id] = asyncio.create_task(self.auto_remove_timeout(user_id))
         
-        await interaction.response.send_message("Tu as bien été ajouté à la liste des joueurs prêts (pour une durée maximum de 4h).", ephemeral=True)
+        await interaction.response.send_message(":white_check_mark: Tu as bien été ajouté à la liste des joueurs prêts.", ephemeral=True)
         await self.update_announcement()
 
     @app_commands.command(name="unready", description="Te retire de la liste des personnes prêtes à jouer")
@@ -160,16 +198,7 @@ class ready(commands.Cog):
             return
 
         readies.remove(playerID)
-        
-        # On annule le chronomètre de 4h car le joueur part de lui-même
-        if playerID in self.timeout_timers:
-            self.timeout_timers[playerID].cancel()
-            del self.timeout_timers[playerID]
-            
-        # On annule aussi le timer hors-ligne au cas où il était en cours
-        if playerID in self.offline_timers:
-            self.offline_timers[playerID].cancel()
-            del self.offline_timers[playerID]
+        self.cancel_all_timers(interaction.user.id)
 
         await interaction.response.send_message("Tu as bien été retiré de la liste des joueurs prêts.", ephemeral=True)
         await self.update_announcement()
@@ -183,23 +212,28 @@ class ready(commands.Cog):
     
     @commands.Cog.listener()
     async def on_presence_update(self, before: discord.Member, after: discord.Member):
-        """Détecte les changements de statut pour lancer ou annuler le timer de déconnexion."""
         user_id = after.id
 
-        # Si le joueur n'est pas dans la liste des gens prêts, on ignore
+        # 1. GESTION DE LA PÉRIODE DE GRÂCE (Le joueur était en retard mais vient de se connecter)
+        if after.status != discord.Status.offline and user_id in self.grace_timers:
+            self.grace_timers[user_id].cancel()
+            del self.grace_timers[user_id]
+            
+            # On l'ajoute officiellement
+            if user_id not in readies:
+                readies.append(user_id)
+            self.timeout_timers[user_id] = asyncio.create_task(self.auto_remove_timeout(user_id))
+            await self.update_announcement()
+            return # On s'arrête là pour ce joueur
+
+        # 2. GESTION CLASSIQUE DE LA DÉCONNEXION (les 10 minutes)
         if user_id not in readies:
             return
 
-        # Si le joueur passe hors ligne (invisible ou déconnecté)
         if after.status == discord.Status.offline:
-            # S'il n'a pas déjà un timer en cours
             if user_id not in self.offline_timers:
-                # On lance le chronomètre de 10 minutes
                 self.offline_timers[user_id] = asyncio.create_task(self.auto_remove_offline(user_id))
-        
-        # Si le joueur revient en ligne (online, idle, dnd)
         elif after.status != discord.Status.offline:
-            # Si un timer était en cours, on l'annule !
             if user_id in self.offline_timers:
                 self.offline_timers[user_id].cancel()
                 del self.offline_timers[user_id]
@@ -221,7 +255,7 @@ class ready(commands.Cog):
             if user_id in self.timeout_timers:
                 self.timeout_timers[user_id].cancel()
                 del self.timeout_timers[user_id]
-                
+
             # On met à jour l'annonce pour refléter son départ
             await self.update_announcement()
             
@@ -253,6 +287,80 @@ class ready(commands.Cog):
             
         except asyncio.CancelledError:
             # Annulé car le joueur a fait /unready manuellement ou a été retiré par le timer hors-ligne
+            pass
+    
+    def parse_time(self, time_str: str) -> int:
+        """Convertit une chaîne de caractères (ex: 1h30, 90, 15m) en secondes."""
+        if not time_str:
+            return 0
+            
+        time_str = time_str.lower().replace(',', '.')
+        hours, mins = 0.0, 0.0
+        
+        # Recherche des heures (ex: 1.5h, 2 heures)
+        h_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:h|heure|heures)', time_str)
+        if h_match:
+            hours = float(h_match.group(1))
+            time_str = time_str[:h_match.start()] + time_str[h_match.end():]
+            
+        # Recherche des minutes (ex: 15m, 5 min)
+        m_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:m|min|mins|minute|minutes)', time_str)
+        if m_match:
+            mins = float(m_match.group(1))
+            time_str = time_str[:m_match.start()] + time_str[m_match.end():]
+            
+        # S'il n'y a ni 'h' ni 'm', on cherche juste un nombre (qu'on considérera comme des minutes, ex: "90")
+        if hours == 0 and mins == 0:
+            num_match = re.search(r'(\d+(?:\.\d+)?)', time_str)
+            if num_match:
+                mins = float(num_match.group(1))
+                
+        return int((hours * 3600) + (mins * 60))
+
+    def cancel_all_timers(self, user_id: int):
+        """Annule absolument tous les chronomètres liés à un joueur pour repartir à zéro."""
+        for timer_dict in [self.offline_timers, self.timeout_timers, self.pending_timers, self.grace_timers]:
+            if user_id in timer_dict:
+                timer_dict[user_id].cancel()
+                del timer_dict[user_id]
+
+    async def delayed_ready(self, member: discord.Member, delay_sec: int):
+        """Attend le délai demandé avant de vérifier si on ajoute le joueur."""
+        try:
+            await asyncio.sleep(delay_sec)
+            
+            user_id = member.id
+            if user_id in self.pending_timers:
+                del self.pending_timers[user_id]
+                
+            # On vérifie le statut de l'utilisateur sur le serveur
+            guild = member.guild
+            updated_member = guild.get_member(user_id)
+            if not updated_member: 
+                return
+            
+            if updated_member.status != discord.Status.offline:
+                # S'il est en ligne, on l'ajoute directement et on lance les 4h !
+                if user_id not in readies:
+                    readies.append(user_id)
+                self.timeout_timers[user_id] = asyncio.create_task(self.auto_remove_timeout(user_id))
+                await self.update_announcement()
+            else:
+                # S'il est hors-ligne, on lui laisse 15 minutes de grâce
+                self.grace_timers[user_id] = asyncio.create_task(self.grace_period(user_id))
+                
+        except asyncio.CancelledError:
+            pass
+
+    async def grace_period(self, user_id: int):
+        """Attend 15 minutes. Si la tâche n'est pas annulée (reconnexion), le joueur est ignoré."""
+        try:
+            await asyncio.sleep(15 * 60) # 15 minutes en secondes
+            
+            if user_id in self.grace_timers:
+                del self.grace_timers[user_id]
+                # Optionnel : tu pourrais envoyer un DM au joueur ici pour dire "Délai expiré"
+        except asyncio.CancelledError:
             pass
         
 
