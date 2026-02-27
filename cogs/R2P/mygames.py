@@ -1,7 +1,7 @@
 import discord
 from discord.ext import commands
 from discord import app_commands
-from cogs.R2P.manage_libraries import *
+from cogs.R2P.game_data import *
 
 
 class MyGames(commands.Cog):

@@ -3,7 +3,7 @@ from discord.ext import commands
 from discord import app_commands
 import os
 from dotenv import load_dotenv
-from cogs.R2P.manage_libraries import *
+from cogs.R2P.game_data import *
 import asyncio
 import re
 
