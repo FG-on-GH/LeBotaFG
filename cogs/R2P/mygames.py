@@ -21,6 +21,7 @@ class MyGames(commands.Cog):
         
         for reg_title in player_libraries[player]:
             validation_message+=(pretty_print_library[reg_title]+", ")
+        validation_message=validation_message[:-2] # retire la virgule en trop quand on a parcouru toute la liste
         await interaction.response.send_message(f"Voici tous les jeux que tu as ajouté :\n{validation_message}", ephemeral=True)
 
 async def setup(bot):
