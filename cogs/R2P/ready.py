@@ -4,6 +4,7 @@ from discord import app_commands
 import os
 from dotenv import load_dotenv
 from cogs.R2P.manage_libraries import *
+import asyncio
 
 load_dotenv()
 
@@ -64,6 +65,7 @@ class ready(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         load_data()
+        self.offline_timers = {}
     
     async def update_announcement(self):
         """Génère l'annonce sous forme d'Embed, supprime l'ancienne et envoie la nouvelle."""
@@ -77,25 +79,25 @@ class ready(commands.Cog):
         # 1. Création de l'Embed selon le nombre de joueurs
         if len(readies) == 0:
             embed = discord.Embed(
-                title="🔴 En attente de joueurs", 
+                title=":red_circle: En attente de joueurs", 
                 description="Personne n'est prêt pour le moment.\nUtilisez `/ready` pour vous ajouter.", 
                 color=discord.Color.red()
             )
         elif len(readies) == 1:
             embed = discord.Embed(
-                title="🟠 Un joueur est prêt !", 
+                title=":orange_circle: Un joueur est prêt !", 
                 description=f"<@{readies[0]}> est prêt à jouer ! On attend les autres...", 
                 color=discord.Color.orange()
             )
         else:
             embed = discord.Embed(
-                title="🟢 Des joueurs sont prêts !", 
+                title=":green_circle: Des joueurs sont prêts !", 
                 description="Voici le récapitulatif pour la session :",
                 color=discord.Color.green()
             )
             
             # Champ 1 : Joueurs prêts
-            ready_mentions = "\n".join([f"🎮 <@{uid}>" for uid in readies])
+            ready_mentions = "\n".join([f"<@{uid}>" for uid in readies])
             embed.add_field(name="Joueurs", value=ready_mentions, inline=False)
             
             # Recherche des jeux
@@ -105,7 +107,7 @@ class ready(commands.Cog):
             if not prettyprint_common_games:
                 embed.add_field(name="Jeux en commun", value="*Aucun jeu en commun trouvé*", inline=False)
             else:
-                games_str = "\n".join([f"🎲 {game}" for game in prettyprint_common_games])
+                games_str = "\n".join([f"{game}" for game in prettyprint_common_games])
                 embed.add_field(name="Jeux en commun", value=games_str, inline=False)
                 
             # Champ 3 (Optionnel) : Joueurs exclus
@@ -158,6 +160,49 @@ class ready(commands.Cog):
         readies.clear()
         # On met à jour l'annonce (qui affichera que personne n'est prêt)
         await self.update_announcement()
+    
+    @commands.Cog.listener()
+    async def on_presence_update(self, before: discord.Member, after: discord.Member):
+        """Détecte les changements de statut pour lancer ou annuler le timer de déconnexion."""
+        user_id = after.id
+
+        # Si le joueur n'est pas dans la liste des gens prêts, on ignore
+        if user_id not in readies:
+            return
+
+        # Si le joueur passe hors ligne (invisible ou déconnecté)
+        if after.status == discord.Status.offline:
+            # S'il n'a pas déjà un timer en cours
+            if user_id not in self.offline_timers:
+                # On lance le chronomètre de 10 minutes
+                self.offline_timers[user_id] = asyncio.create_task(self.auto_remove_offline(user_id))
+        
+        # Si le joueur revient en ligne (online, idle, dnd)
+        elif after.status != discord.Status.offline:
+            # Si un timer était en cours, on l'annule !
+            if user_id in self.offline_timers:
+                self.offline_timers[user_id].cancel()
+                del self.offline_timers[user_id]
+
+    async def auto_remove_offline(self, user_id: int):
+        """Attend 10 minutes puis retire le joueur s'il est toujours hors ligne."""
+        try:
+            # Attente 1 minute
+            await asyncio.sleep(60)
+            
+            # Si on arrive ici, la minute s'est écoulée sans annulation
+            if user_id in readies:
+                readies.remove(user_id)
+            
+            if user_id in self.offline_timers:
+                del self.offline_timers[user_id]
+                
+            # On met à jour l'annonce pour refléter son départ
+            await self.update_announcement()
+            
+        except asyncio.CancelledError:
+            # Cette exception est levée si la tâche a été annulée (le joueur est revenu en ligne)
+            pass
         
 
 async def setup(bot):

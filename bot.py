@@ -10,6 +10,8 @@ TOKEN = os.getenv('DISCORD_TOKEN')
 # Charge les permissions discord basiques et lecture de message
 intents = discord.Intents.default()
 intents.message_content = True
+intents.members = True
+intents.presences = True
 
 # On crée une classe spécifique pour le bot héritant de la classe Discord de base
 class LeBotaFG(commands.Bot):
