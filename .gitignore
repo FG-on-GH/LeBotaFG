@@ -4,7 +4,7 @@
 ## Get latest from https://github.com/github/gitignore/blob/main/VisualStudio.gitignore
 
 # FG added those
-/cogs/R2P/game_libraries.json
+/cogs/R2P/*.json
 
 
 # User-specific files

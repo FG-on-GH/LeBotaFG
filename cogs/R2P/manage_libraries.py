@@ -15,7 +15,7 @@ pretty_print_library = {}
 
 def load_data():
     '''Charge la sauvegarde des noms d'affichage et des bibliothèque de joueurs si elle existe'''
-    global player_libraries, pretty_print_library
+    global player_libraries, pretty_print_library, last_announcement_id
     try:
         with open(data_path, "r") as f:
             print("Found save file")
@@ -25,9 +25,7 @@ def load_data():
             pretty_print_library.clear()
             # On recrée les ensembles à partir de la sauvegarde
             player_libraries.update({k: set(v) for k, v in data.get("player_libraries", {}).items()})
-            print(player_libraries)
             pretty_print_library.update(data.get("pretty_print_library", {}))
-            print(pretty_print_library)
     except FileNotFoundError:
         print("Save not found")
         return
@@ -39,7 +37,7 @@ def save_data():
     '''Enregistre la sauvegarde des noms d'affichage et des bibliothèque de joueurs dans game_libraries.json'''
     data = {
         "player_libraries": {k: list(v) for k, v in player_libraries.items()},
-        "pretty_print_library": pretty_print_library
+        "pretty_print_library": pretty_print_library,
     }
     print("About to write")
     with open(data_path, "w") as f:
