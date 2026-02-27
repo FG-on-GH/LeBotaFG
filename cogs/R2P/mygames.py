@@ -15,8 +15,8 @@ class MyGames(commands.Cog):
         validation_message=""
         load_data()
 
-        if player not in player_libraries:
-            await interaction.response.send_message("Il semble que tu n'as pas encore ajouté de jeux... Utilise /addgame pour avoir accès à toutes mes autres fonctionnalités !", ephemeral=True)
+        if player not in player_libraries or not player_libraries[player]:
+            await interaction.response.send_message("Je n'ai aucun jeux enregistré pour toi... Utilise /addgame pour avoir accès à toutes mes autres fonctionnalités !", ephemeral=True)
             return
         
         for reg_title in player_libraries[player]:
