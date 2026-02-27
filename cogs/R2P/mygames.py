@@ -11,15 +11,15 @@ class MyGames(commands.Cog):
     @app_commands.command(name='mygames', description='Affiche tes jeux enregistrés dans la base de données')
     async def mygames(self, interaction:discord.Interaction):
 
-        player = interaction.user.name
+        playerID = interaction.user.id
         validation_message=""
         load_data()
 
-        if player not in player_libraries or not player_libraries[player]:
+        if playerID not in player_libraries or not player_libraries[playerID]:
             await interaction.response.send_message("Je n'ai aucun jeux enregistré pour toi... Utilise /addgame pour avoir accès à toutes mes autres fonctionnalités !", ephemeral=True)
             return
         
-        for reg_title in player_libraries[player]:
+        for reg_title in player_libraries[playerID]:
             validation_message+=(pretty_print_library[reg_title]+", ")
         validation_message=validation_message[:-2] # retire la virgule en trop quand on a parcouru toute la liste
         await interaction.response.send_message(f"Voici tous les jeux que tu as ajouté :\n{validation_message}", ephemeral=True)
