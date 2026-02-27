@@ -15,15 +15,25 @@ pretty_print_library = {}
 
 def load_data():
     '''Charge la sauvegarde des noms d'affichage et des bibliothèque de joueurs si elle existe'''
+    global player_libraries, pretty_print_library
     try:
         with open(data_path, "r") as f:
+            print("Found save file")
             data = json.load(f)
-            # On recrée les ensembles (sets) à partir de la sauvegarde
-            player_libraries = {k: set(v) for k, v in data.get("player_libraries", {}).items()}
-            pretty_print_library = data.get("pretty_print_library", {})
+            # On vide les dictionnaires sans casser leur référence mémoire
+            player_libraries.clear()
+            pretty_print_library.clear()
+            # On recrée les ensembles à partir de la sauvegarde
+            player_libraries.update({k: set(v) for k, v in data.get("player_libraries", {}).items()})
+            print(player_libraries)
+            pretty_print_library.update(data.get("pretty_print_library", {}))
+            print(pretty_print_library)
     except FileNotFoundError:
-        player_libraries = {}
-        pretty_print_library = {}
+        print("Save not found")
+        return
+    except json.JSONDecodeError:
+        print("Save corrupted")
+        return
 
 def save_data():
     '''Enregistre la sauvegarde des noms d'affichage et des bibliothèque de joueurs dans game_libraries.json'''
@@ -31,8 +41,10 @@ def save_data():
         "player_libraries": {k: list(v) for k, v in player_libraries.items()},
         "pretty_print_library": pretty_print_library
     }
+    print("About to write")
     with open(data_path, "w") as f:
         json.dump(data, f)
+        print("Data written :\n",data)
 
 
 
