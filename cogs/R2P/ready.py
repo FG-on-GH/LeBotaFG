@@ -2,119 +2,126 @@ import discord
 from discord.ext import commands
 from discord import app_commands
 import os
-from dotenv import load_dotenv
-from cogs.R2P.game_data import *
+import json
 import asyncio
 import re
+from pathlib import Path
+from dotenv import load_dotenv
+
+# Importation de notre nouvelle base de données
+from cogs.R2P.game_data import player_games, game_display_names, load_data
 
 load_dotenv()
 
-# Ensemble pour stocker les joueurs prêts
-readies=list()
-
-announcement_id_path=Path("./cogs/R2P/last_announcement_id.json")
-def load_last_annoucement():
-    """Charge l'ID depuis le fichier JSON."""
-    try:
-        with open(announcement_id_path, "r") as f:
-            data = json.load(f)
-            return data.get("last_announcement_id")
-    except FileNotFoundError:
-        print("Annoucement not found")
-        return
-    except json.JSONDecodeError:
-        print("Announcement corrupted")
-        return
-
-def save_last_announcement(id):
-    """Sauvegarde l'ID dans le fichier JSON."""
-    with open(announcement_id_path, "w") as f:
-        json.dump({"last_announcement_id": id}, f)
-
-
-def find_common_games():
-    '''
-    Prend une liste d'ID de joueurs et renvoie :
-    1. Une liste des noms d'affichage des jeux qu'ils ont en commun
-    2. Une liste des ID des joueurs exclus (car ils n'ont aucun jeu enregistré)
-    '''
-    sets_of_games = []
-    excluded_users = []
-    
-    for id in readies:
-        # Conversion en str pour chercher dans le dictionnaire JSON
-        str_id = str(id)
-        
-        # Si le joueur a une entrée et qu'elle n'est pas vide
-        if str_id in player_libraries and player_libraries[str_id]:
-            sets_of_games.append(player_libraries[str_id])
-        else:
-            # Sinon, on l'ajoute à la liste des exclus (on garde l'ID original pour le taguer)
-            excluded_users.append(id)
-    
-    # Si absolument personne dans la liste n'a de jeu
-    if not sets_of_games:
-        return [], excluded_users
-
-    # On fait l'intersection uniquement sur ceux qui ont des jeux
-    common_games = set.intersection(*sets_of_games)
-    prettyprint_common_games = sorted([pretty_print_library.get(game, game) for game in common_games])
-    
-    return prettyprint_common_games, excluded_users
-
-class ready(commands.Cog):
-    def __init__(self, bot):
+class ReadyManager(commands.Cog):
+    """
+    Cog gérant le système de matchmaking (LFG - Looking For Group).
+    Permet aux joueurs de se déclarer prêts, calcule les jeux en commun,
+    et maintient une annonce à jour dans un salon dédié.
+    """
+    def __init__(self, bot: commands.Bot):
         self.bot = bot
-        load_data()
-        self.offline_timers = {}
-        self.timeout_timers = {}
-        self.pending_timers = {}
-        self.grace_timers = {}
-    
-    async def update_announcement(self):
-        """Génère l'annonce sous forme d'Embed, supprime l'ancienne et envoie la nouvelle."""
-        ready_channel_ID = int(os.getenv('READY_CHANNEL_ID'))
-        channel = self.bot.get_channel(ready_channel_ID)
         
-        if channel is None:
-            print("Attention : Salon d'annonce introuvable.")
+        # État du système
+        self.ready_players: list[int] = []
+        
+        # Gestion de l'annonce
+        self.announcement_file = Path("./cogs/R2P/last_announcement_id.json")
+        
+        # Dictionnaires pour stocker les tâches asynchrones (chronomètres) par ID utilisateur
+        self.offline_timers: dict[int, asyncio.Task] = {}
+        self.timeout_timers: dict[int, asyncio.Task] = {}
+        self.pending_timers: dict[int, asyncio.Task] = {}
+        self.grace_timers: dict[int, asyncio.Task] = {}
+        
+        # Chargement initial des jeux
+        load_data()
+
+    # --- GESTION DE L'ANNONCE ---
+
+    def _get_last_announcement_id(self) -> int | None:
+        """Récupère l'ID du dernier message d'annonce."""
+        try:
+            with open(self.announcement_file, "r") as f:
+                return json.load(f).get("last_announcement_id")
+        except (FileNotFoundError, json.JSONDecodeError):
+            return None
+
+    def _save_last_announcement_id(self, message_id: int):
+        """Sauvegarde l'ID du nouveau message d'annonce."""
+        self.announcement_file.parent.mkdir(parents=True, exist_ok=True)
+        with open(self.announcement_file, "w") as f:
+            json.dump({"last_announcement_id": message_id}, f)
+
+    def find_common_games(self) -> tuple[list[str], list[int]]:
+        """
+        Croise les bibliothèques des joueurs prêts.
+        Retourne : (Liste des jeux en commun formatés, Liste des joueurs sans jeu)
+        """
+        sets_of_games = []
+        excluded_users = []
+        
+        for uid in self.ready_players:
+            str_id = str(uid)
+            if str_id in player_games and player_games[str_id]:
+                sets_of_games.append(player_games[str_id])
+            else:
+                excluded_users.append(uid)
+        
+        if not sets_of_games:
+            return [], excluded_users
+
+        # Intersection de tous les sets de jeux
+        common_games = set.intersection(*sets_of_games)
+        
+        # On récupère les noms d'affichage et on les trie par ordre alphabétique
+        pretty_games = sorted(
+            [game_display_names.get(game, game) for game in common_games],
+            key=str.casefold
+        )
+        
+        return pretty_games, excluded_users
+
+    async def update_announcement(self):
+        """Génère l'annonce Embed, supprime l'ancienne et publie la nouvelle."""
+        channel_id = int(os.getenv('READY_CHANNEL_ID', 0))
+        channel = self.bot.get_channel(channel_id)
+        
+        if not channel:
+            print("⚠️ Attention : Salon d'annonce introuvable (Vérifiez READY_CHANNEL_ID dans le .env).")
             return
 
-        # 1. Création de l'Embed selon le nombre de joueurs
-        if len(readies) == 0:
+        # 1. Construction de l'Embed
+        if not self.ready_players:
             embed = discord.Embed(
-                title=":red_circle: En attente de joueurs", 
+                title="🔴 En attente de joueurs", 
                 description="Personne n'est prêt pour le moment.\nUtilisez `/ready` pour vous ajouter.", 
                 color=discord.Color.red()
             )
-        elif len(readies) == 1:
+        elif len(self.ready_players) == 1:
             embed = discord.Embed(
-                title=":orange_circle: Un joueur est prêt !", 
-                description=f"<@{readies[0]}> est prêt à jouer ! On attend les autres...", 
+                title="🟠 Un joueur est prêt !", 
+                description=f"<@{self.ready_players[0]}> est prêt à jouer ! On attend les autres...", 
                 color=discord.Color.orange()
             )
         else:
             embed = discord.Embed(
-                title=":green_circle: Des joueurs sont prêts !", 
+                title="🟢 Des joueurs sont prêts !", 
                 description="Voici le récapitulatif pour la session :",
                 color=discord.Color.green()
             )
             
-            # Champ 1 : Joueurs prêts
-            ready_mentions = "\n".join([f"<@{uid}>" for uid in readies])
+            ready_mentions = "\n".join([f"<@{uid}>" for uid in self.ready_players])
             embed.add_field(name="Joueurs", value=ready_mentions, inline=False)
             
-            # Recherche des jeux
-            (prettyprint_common_games, excluded_users) = find_common_games()
+            common_games, excluded_users = self.find_common_games()
             
-            # Champ 2 : Jeux en commun
-            if not prettyprint_common_games:
+            if not common_games:
                 embed.add_field(name="Jeux en commun", value="*Aucun jeu en commun trouvé*", inline=False)
             else:
-                games_str = "\n".join([f"{game}" for game in prettyprint_common_games])
+                games_str = "\n".join(common_games)
                 embed.add_field(name="Jeux en commun", value=games_str, inline=False)
                 
-            # Champ 3 (Optionnel) : Joueurs exclus
             if excluded_users:
                 excluded_str = ", ".join([f"<@{uid}>" for uid in excluded_users])
                 embed.add_field(
@@ -123,111 +130,215 @@ class ready(commands.Cog):
                     inline=False
                 )
 
-        # 2. Suppression de l'ancien message
-        last_announcement_id = load_last_annoucement()
-        if last_announcement_id:
+        # 2. Suppression de l'ancienne annonce
+        last_id = self._get_last_announcement_id()
+        if last_id:
             try:
-                old_msg = await channel.fetch_message(last_announcement_id)
+                old_msg = await channel.fetch_message(last_id)
                 await old_msg.delete()
             except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                 pass 
                 
-        # 3. Envoi du nouvel Embed et sauvegarde de l'ID
-        # Attention ici : on utilise l'argument `embed=` au lieu de passer du texte brut
+        # 3. Envoi et sauvegarde de la nouvelle annonce
         new_msg = await channel.send(embed=embed)
-        save_last_announcement(new_msg.id)
+        self._save_last_announcement_id(new_msg.id)
 
-    @app_commands.command(name="ready", description="T'ajoute à la liste des personnes prêtes à jouer")
-    @app_commands.describe(delai="Dans combien de temps es-tu dispo ? (ex: 15m, 1h30, 90)")
-    async def ready(self, interaction: discord.Interaction, delai: str = None):
-        user_id = interaction.user.id
+
+    # --- CHRONOMÈTRES ET TIMERS ---
+
+    def cancel_all_timers(self, user_id: int):
+        """Annule tous les chronomètres liés à un joueur pour éviter les conflits."""
+        for timer_dict in [self.offline_timers, self.timeout_timers, self.pending_timers, self.grace_timers]:
+            if user_id in timer_dict:
+                timer_dict[user_id].cancel()
+                del timer_dict[user_id]
+
+    async def auto_remove_offline(self, user_id: int):
+        """Retire le joueur après 5 minutes de déconnexion."""
+        try:
+            await asyncio.sleep(5 * 60) # 5 minutes
+            
+            if user_id in self.ready_players:
+                self.ready_players.remove(user_id)
+            
+            # Nettoyage global
+            if user_id in self.offline_timers: del self.offline_timers[user_id]
+            if user_id in self.timeout_timers:
+                self.timeout_timers[user_id].cancel()
+                del self.timeout_timers[user_id]
+
+            await self.update_announcement()
+        except asyncio.CancelledError:
+            pass # Le timer a été annulé car le joueur s'est reconnecté
+    
+    async def auto_remove_timeout(self, user_id: int):
+        """Retire le joueur automatiquement au bout de 6 heures."""
+        try:
+            await asyncio.sleep(6 * 60 * 60) # 6 heures
+            
+            if user_id in self.ready_players:
+                self.ready_players.remove(user_id)
+            
+            if user_id in self.timeout_timers: del self.timeout_timers[user_id]
+            if user_id in self.offline_timers:
+                self.offline_timers[user_id].cancel()
+                del self.offline_timers[user_id]
+
+            await self.update_announcement()
+        except asyncio.CancelledError:
+            pass
+            
+    async def grace_period(self, user_id: int):
+        """Accorde 15 minutes au joueur en retard pour se connecter sur Discord."""
+        try:
+            await asyncio.sleep(15 * 60) # 15 minutes
+            if user_id in self.grace_timers:
+                del self.grace_timers[user_id]
+        except asyncio.CancelledError:
+            pass
+
+    async def delayed_ready(self, member: discord.Member, delay_sec: int):
+        """Attend le délai demandé avant d'essayer d'ajouter le joueur à la liste."""
+        try:
+            await asyncio.sleep(delay_sec)
+            
+            user_id = member.id
+            if user_id in self.pending_timers:
+                del self.pending_timers[user_id]
+                
+            guild = member.guild
+            updated_member = guild.get_member(user_id)
+            if not updated_member: return
+            
+            # Si le joueur est en ligne, on l'ajoute !
+            if updated_member.status != discord.Status.offline:
+                if user_id not in self.ready_players:
+                    self.ready_players.append(user_id)
+                self.timeout_timers[user_id] = asyncio.create_task(self.auto_remove_timeout(user_id))
+                await self.update_announcement()
+            else:
+                # S'il est hors-ligne, on lance la période de grâce de 15 minutes
+                self.grace_timers[user_id] = asyncio.create_task(self.grace_period(user_id))
+                
+        except asyncio.CancelledError:
+            pass
+
+
+    # --- UTILITAIRES ---
+
+    def parse_time(self, time_str: str) -> int:
+        """Convertit une chaîne de temps (1h30, 90m) en secondes."""
+        if not time_str: return 0
+            
+        time_str = time_str.lower().replace(',', '.')
+        hours, mins = 0.0, 0.0
         
-        # On nettoie tous ses anciens compteurs pour repartir à zéro
+        h_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:h|heure|heures)', time_str)
+        if h_match:
+            hours = float(h_match.group(1))
+            time_str = time_str[:h_match.start()] + time_str[h_match.end():]
+            
+        m_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:m|min|mins|minute|minutes)', time_str)
+        if m_match:
+            mins = float(m_match.group(1))
+            time_str = time_str[:m_match.start()] + time_str[m_match.end():]
+            
+        if hours == 0 and mins == 0:
+            num_match = re.search(r'(\d+(?:\.\d+)?)', time_str)
+            if num_match:
+                mins = float(num_match.group(1))
+                
+        return int((hours * 3600) + (mins * 60))
+
+
+    # --- COMMANDES ET ÉVÉNEMENTS ---
+
+    @app_commands.command(name="ready", description="Rejoins la liste des joueurs prêts")
+    @app_commands.describe(delai="Dans combien de temps es-tu dispo ? (ex: 15m, 1h30, 90)")
+    async def ready_cmd(self, interaction: discord.Interaction, delai: str = None):
+        user_id = interaction.user.id
         self.cancel_all_timers(user_id)
         
-        # Cas 1 : L'utilisateur a précisé un délai
-        if delai and delai!="0":
+        # Cas 1 : Ajout différé
+        if delai and delai != "0":
             delay_sec = self.parse_time(delai)
             
-            # Sécurité 1 : Le format n'a pas été compris (retourne 0)
             if delay_sec == 0:
                 await interaction.response.send_message(
-                    ":x: Je n'ai pas compris le format du temps. Utilise par exemple : `15m`, `1h30`, `90` ou `2 heures`.", 
+                    "❌ Je n'ai pas compris le format du temps. Utilise par exemple : `15m`, `1h30` ou `90`.", 
                     ephemeral=True
                 )
-                return # On arrête l'exécution ici, il n'est pas ajouté
+                return
                 
-            # Sécurité 2 : Le délai dépasse 6 heures (6 * 3600 = 21600 secondes)
             if delay_sec > 21600:
                 await interaction.response.send_message(
-                    ":hourglass: C'est un peu trop pour ma mémoire ! Tu ne peux pas prévoir une session plus de 6 heures à l'avance.", 
+                    "⏳ Tu ne peux pas prévoir une session plus de 6 heures à l'avance.", 
                     ephemeral=True
                 )
-                return # On arrête l'exécution ici
+                return
                 
-            # Si tout est bon, on lance l'attente
             self.pending_timers[user_id] = asyncio.create_task(self.delayed_ready(interaction.user, delay_sec))
             
-            # Petit calcul pour un affichage propre dans le message de confirmation
             heures = delay_sec // 3600
             minutes = (delay_sec % 3600) // 60
             temps_str = f"{heures}h{minutes:02d}" if heures > 0 else f"{minutes} minute(s)"
             
             await interaction.response.send_message(
-                f":white_check_mark: C'est noté ! Je t'ajouterai à la liste dans {temps_str} si tu es toujours connecté à ce moment là.", 
+                f"✅ C'est noté ! Je t'ajouterai à la liste dans {temps_str} si tu es connecté.", 
                 ephemeral=True
             )
-            return # Le processus s'arrête là, le reste se fera dans `delayed_ready`
+            return
                 
-        # Cas 2 : Ajout immédiat (aucun argument "delai" fourni)
-        if user_id not in readies:
-            readies.append(user_id)
+        # Cas 2 : Ajout immédiat
+        if user_id not in self.ready_players:
+            self.ready_players.append(user_id)
             
-        # On lance les 4h de présence max
         self.timeout_timers[user_id] = asyncio.create_task(self.auto_remove_timeout(user_id))
         
-        await interaction.response.send_message(":white_check_mark: Tu as bien été ajouté à la liste des joueurs prêts.", ephemeral=True)
+        await interaction.response.send_message("✅ Tu es maintenant dans la liste des joueurs prêts.", ephemeral=True)
         await self.update_announcement()
 
-    @app_commands.command(name="unready", description="Te retire de la liste des personnes prêtes à jouer")
-    async def unready(self, interaction: discord.Interaction):
-        playerID = interaction.user.id
+
+    @app_commands.command(name="unready", description="Te retire de la liste des joueurs prêts")
+    async def unready_cmd(self, interaction: discord.Interaction):
+        user_id = interaction.user.id
         
-        if playerID not in readies:
-            await interaction.response.send_message("Tu n'étais pas dans la liste des joueurs prêts.", ephemeral=True)
+        if user_id not in self.ready_players:
+            await interaction.response.send_message("Tu n'étais pas dans la liste.", ephemeral=True)
             return
 
-        readies.remove(playerID)
-        self.cancel_all_timers(interaction.user.id)
+        self.ready_players.remove(user_id)
+        self.cancel_all_timers(user_id)
 
-        await interaction.response.send_message("Tu as bien été retiré de la liste des joueurs prêts.", ephemeral=True)
+        await interaction.response.send_message("✅ Tu as été retiré de la liste.", ephemeral=True)
         await self.update_announcement()
-    
+
+
     @commands.Cog.listener()
     async def on_ready(self):
-        # On s'assure que la liste est bien vide au démarrage
-        readies.clear()
-        # On met à jour l'annonce (qui affichera que personne n'est prêt)
+        """Réinitialise la liste au démarrage du bot."""
+        self.ready_players.clear()
         await self.update_announcement()
-    
+
+
     @commands.Cog.listener()
     async def on_presence_update(self, before: discord.Member, after: discord.Member):
+        """Surveille les connexions/déconnexions des joueurs impliqués."""
         user_id = after.id
 
-        # 1. GESTION DE LA PÉRIODE DE GRÂCE (Le joueur était en retard mais vient de se connecter)
+        # 1. Période de grâce (le joueur devait se connecter)
         if after.status != discord.Status.offline and user_id in self.grace_timers:
             self.grace_timers[user_id].cancel()
             del self.grace_timers[user_id]
             
-            # On l'ajoute officiellement
-            if user_id not in readies:
-                readies.append(user_id)
+            if user_id not in self.ready_players:
+                self.ready_players.append(user_id)
             self.timeout_timers[user_id] = asyncio.create_task(self.auto_remove_timeout(user_id))
             await self.update_announcement()
-            return # On s'arrête là pour ce joueur
+            return
 
-        # 2. GESTION CLASSIQUE DE LA DÉCONNEXION (les 10 minutes)
-        if user_id not in readies:
+        # 2. Gestion des déconnexions (5 minutes)
+        if user_id not in self.ready_players:
             return
 
         if after.status == discord.Status.offline:
@@ -238,131 +349,6 @@ class ready(commands.Cog):
                 self.offline_timers[user_id].cancel()
                 del self.offline_timers[user_id]
 
-    async def auto_remove_offline(self, user_id: int):
-        """Attend 10 minutes puis retire le joueur s'il est toujours hors ligne."""
-        try:
-            # Attente 1 minute
-            await asyncio.sleep(60)
-            
-            # Si on arrive ici, la minute s'est écoulée sans annulation
-            if user_id in readies:
-                readies.remove(user_id)
-            
-            if user_id in self.offline_timers:
-                del self.offline_timers[user_id]
-            
-            # On annule le timer global de 4h si le joueur est viré pour inactivité
-            if user_id in self.timeout_timers:
-                self.timeout_timers[user_id].cancel()
-                del self.timeout_timers[user_id]
 
-            # On met à jour l'annonce pour refléter son départ
-            await self.update_announcement()
-            
-        except asyncio.CancelledError:
-            # Cette exception est levée si la tâche a été annulée (le joueur est revenu en ligne)
-            pass
-    
-    async def auto_remove_timeout(self, user_id: int):
-        """Attend 4 heures puis retire le joueur s'il est toujours dans la liste."""
-        try:
-            # Attente de 4 heures
-            await asyncio.sleep(4*60*60)
-            
-            # Si le timer arrive à bout, on retire le joueur
-            if user_id in readies:
-                readies.remove(user_id)
-            
-            # On nettoie les dictionnaires
-            if user_id in self.timeout_timers:
-                del self.timeout_timers[user_id]
-            
-            # S'il y avait un timer de déconnexion en cours pour lui, on l'annule aussi
-            if user_id in self.offline_timers:
-                self.offline_timers[user_id].cancel()
-                del self.offline_timers[user_id]
-
-            # Mise à jour de l'annonce
-            await self.update_announcement()
-            
-        except asyncio.CancelledError:
-            # Annulé car le joueur a fait /unready manuellement ou a été retiré par le timer hors-ligne
-            pass
-    
-    def parse_time(self, time_str: str) -> int:
-        """Convertit une chaîne de caractères (ex: 1h30, 90, 15m) en secondes."""
-        if not time_str:
-            return 0
-            
-        time_str = time_str.lower().replace(',', '.')
-        hours, mins = 0.0, 0.0
-        
-        # Recherche des heures (ex: 1.5h, 2 heures)
-        h_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:h|heure|heures)', time_str)
-        if h_match:
-            hours = float(h_match.group(1))
-            time_str = time_str[:h_match.start()] + time_str[h_match.end():]
-            
-        # Recherche des minutes (ex: 15m, 5 min)
-        m_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:m|min|mins|minute|minutes)', time_str)
-        if m_match:
-            mins = float(m_match.group(1))
-            time_str = time_str[:m_match.start()] + time_str[m_match.end():]
-            
-        # S'il n'y a ni 'h' ni 'm', on cherche juste un nombre (qu'on considérera comme des minutes, ex: "90")
-        if hours == 0 and mins == 0:
-            num_match = re.search(r'(\d+(?:\.\d+)?)', time_str)
-            if num_match:
-                mins = float(num_match.group(1))
-                
-        return int((hours * 3600) + (mins * 60))
-
-    def cancel_all_timers(self, user_id: int):
-        """Annule absolument tous les chronomètres liés à un joueur pour repartir à zéro."""
-        for timer_dict in [self.offline_timers, self.timeout_timers, self.pending_timers, self.grace_timers]:
-            if user_id in timer_dict:
-                timer_dict[user_id].cancel()
-                del timer_dict[user_id]
-
-    async def delayed_ready(self, member: discord.Member, delay_sec: int):
-        """Attend le délai demandé avant de vérifier si on ajoute le joueur."""
-        try:
-            await asyncio.sleep(delay_sec)
-            
-            user_id = member.id
-            if user_id in self.pending_timers:
-                del self.pending_timers[user_id]
-                
-            # On vérifie le statut de l'utilisateur sur le serveur
-            guild = member.guild
-            updated_member = guild.get_member(user_id)
-            if not updated_member: 
-                return
-            
-            if updated_member.status != discord.Status.offline:
-                # S'il est en ligne, on l'ajoute directement et on lance les 4h !
-                if user_id not in readies:
-                    readies.append(user_id)
-                self.timeout_timers[user_id] = asyncio.create_task(self.auto_remove_timeout(user_id))
-                await self.update_announcement()
-            else:
-                # S'il est hors-ligne, on lui laisse 15 minutes de grâce
-                self.grace_timers[user_id] = asyncio.create_task(self.grace_period(user_id))
-                
-        except asyncio.CancelledError:
-            pass
-
-    async def grace_period(self, user_id: int):
-        """Attend 15 minutes. Si la tâche n'est pas annulée (reconnexion), le joueur est ignoré."""
-        try:
-            await asyncio.sleep(15 * 60) # 15 minutes en secondes
-            
-            if user_id in self.grace_timers:
-                del self.grace_timers[user_id]
-                # Optionnel : tu pourrais envoyer un DM au joueur ici pour dire "Délai expiré"
-        except asyncio.CancelledError:
-            pass
-        
-
-async def setup(bot):
-    await bot.add_cog(ready(bot))
+async def setup(bot: commands.Bot):
+    await bot.add_cog(ReadyManager(bot))
