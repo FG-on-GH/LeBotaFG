@@ -66,6 +66,7 @@ class ready(commands.Cog):
         self.bot = bot
         load_data()
         self.offline_timers = {}
+        self.timeout_timers = {}
     
     async def update_announcement(self):
         """Génère l'annonce sous forme d'Embed, supprime l'ancienne et envoie la nouvelle."""
@@ -139,7 +140,15 @@ class ready(commands.Cog):
         if playerID not in readies:
             readies.append(playerID)
         
-        await interaction.response.send_message("Tu as bien été ajouté à la liste des joueurs prêts", ephemeral=True)
+        # Gestion du timer de 4h
+        # Si le joueur avait déjà un timer en cours (s'il refait /ready), on le réinitialise
+        if playerID in self.timeout_timers:
+            self.timeout_timers[playerID].cancel()
+        
+        # On lance le chronomètre de 4h
+        self.timeout_timers[playerID] = asyncio.create_task(self.auto_remove_timeout(playerID))
+        
+        await interaction.response.send_message("Tu as bien été ajouté à la liste des joueurs prêts (pour une durée maximum de 4h).", ephemeral=True)
         await self.update_announcement()
 
     @app_commands.command(name="unready", description="Te retire de la liste des personnes prêtes à jouer")
@@ -151,6 +160,17 @@ class ready(commands.Cog):
             return
 
         readies.remove(playerID)
+        
+        # On annule le chronomètre de 4h car le joueur part de lui-même
+        if playerID in self.timeout_timers:
+            self.timeout_timers[playerID].cancel()
+            del self.timeout_timers[playerID]
+            
+        # On annule aussi le timer hors-ligne au cas où il était en cours
+        if playerID in self.offline_timers:
+            self.offline_timers[playerID].cancel()
+            del self.offline_timers[playerID]
+
         await interaction.response.send_message("Tu as bien été retiré de la liste des joueurs prêts.", ephemeral=True)
         await self.update_announcement()
     
@@ -202,6 +222,32 @@ class ready(commands.Cog):
             
         except asyncio.CancelledError:
             # Cette exception est levée si la tâche a été annulée (le joueur est revenu en ligne)
+            pass
+    
+    async def auto_remove_timeout(self, user_id: int):
+        """Attend 4 heures puis retire le joueur s'il est toujours dans la liste."""
+        try:
+            # Attente de 4 heures
+            await asyncio.sleep(4*60*60)
+            
+            # Si le timer arrive à bout, on retire le joueur
+            if user_id in readies:
+                readies.remove(user_id)
+            
+            # On nettoie les dictionnaires
+            if user_id in self.timeout_timers:
+                del self.timeout_timers[user_id]
+            
+            # S'il y avait un timer de déconnexion en cours pour lui, on l'annule aussi
+            if user_id in self.offline_timers:
+                self.offline_timers[user_id].cancel()
+                del self.offline_timers[user_id]
+
+            # Mise à jour de l'annonce
+            await self.update_announcement()
+            
+        except asyncio.CancelledError:
+            # Annulé car le joueur a fait /unready manuellement ou a été retiré par le timer hors-ligne
             pass
         
 
