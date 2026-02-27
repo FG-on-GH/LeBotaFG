@@ -11,7 +11,7 @@ class AddGame(commands.Cog):
     @app_commands.command(name='addgame', description='Ajoute des jeux à ta bibliothèque (virgule entre chaque titre)')
     async def addgame(self, interaction:discord.Interaction, jeux:str):
 
-        player = interaction.user.name
+        playerID = interaction.user.id
         validation_message=""
         load_data()
 
@@ -27,12 +27,12 @@ class AddGame(commands.Cog):
                 pretty_print_library[reg_title]=title
             else:
                 title=pretty_print_library[reg_title]
-            if player not in player_libraries:
-                player_libraries[player]=set()
-            if reg_title in player_libraries[player]:
+            if playerID not in player_libraries:
+                player_libraries[playerID]=set()
+            if reg_title in player_libraries[playerID]:
                 validation_message+=(title+" déjà présent\n")
             else:
-                player_libraries[player].add(reg_title)
+                player_libraries[playerID].add(reg_title)
                 validation_message+=(title+" ajouté :white_check_mark:\n")
         
         save_data()

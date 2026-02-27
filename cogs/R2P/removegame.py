@@ -10,12 +10,12 @@ class RemoveGame(commands.Cog):
     @app_commands.command(name='removegame', description='Retire des jeux de ta bibliothèque (virgule entre chaque titre)')
     async def removegame(self, interaction: discord.Interaction, jeux: str):
 
-        player = interaction.user.name
+        playerID = interaction.user.id
         validation_message = ""
         load_data()
 
         # Vérifier si le joueur a une bibliothèque et si elle n'est pas vide
-        if player not in player_libraries or not player_libraries[player]:
+        if playerID not in player_libraries or not player_libraries[playerID]:
             await interaction.response.send_message("Ta bibliothèque est déjà vide !", ephemeral=True)
             return
 
@@ -32,11 +32,11 @@ class RemoveGame(commands.Cog):
             else:
                 title=pretty_print_library[reg_title]
             # Vérifier si le jeu est bien dans la bibliothèque du joueur
-            if reg_title in player_libraries[player]:
-                player_libraries[player].remove(reg_title)
+            if reg_title in player_libraries[playerID]:
+                player_libraries[playerID].remove(reg_title)
                 validation_message += f"{title} a été retiré :x:\n"
             else:
-                validation_message += f"{title} n'était pas dans ta bibliothèque ¯\_(ツ)_/¯\n"
+                validation_message += f"{title} n'était pas dans ta bibliothèque ¯\\_(ツ)_/¯\n"
         
         save_data()
         await interaction.response.send_message(validation_message, ephemeral=True)
