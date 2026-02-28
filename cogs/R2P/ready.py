@@ -8,8 +8,11 @@ import re
 from pathlib import Path
 from dotenv import load_dotenv
 
+
 import io
-from PIL import Image, ImageDraw, ImageFont, ImageChops
+import urllib.parse
+from PIL import Image, ImageDraw, ImageFont, ImageChops, ImageOps
+
 
 # Importation de notre nouvelle base de données
 from cogs.R2P.game_data import player_games, game_display_names, load_data
@@ -41,90 +44,134 @@ class ReadyManager(commands.Cog):
         load_data()
 
 
-    # --- GENERATION D'IMAGES (NOUVEAU) ---
+    # --- GENERATION D'IMAGES ---
 
-    async def _generate_lfg_image(self, members: list[discord.Member]) -> io.BytesIO:
-        """Génère l'image LFG 'Now playing' avec les avatars."""
-        # Configuration de base
+    async def _generate_lfg_image(self, members: list[discord.Member], common_games: list[str]) -> io.BytesIO:
+        """Génère l'image LFG avec fond, avatars ronds et pochettes SteamGridDB."""
         IMG_WIDTH = 1000
-        IMG_HEIGHT = 500
-        BG_COLOR = (24, 25, 28) # Gris foncé type Discord
-        TEXT_COLOR = (255, 255, 255) # Blanc
+        # On allonge l'image à 900px si on doit afficher des jeux, sinon on garde 500px
+        show_games = 1 <= len(common_games) <= 3
+        IMG_HEIGHT = 900 if show_games else 500
+        TEXT_COLOR = (255, 255, 255, 255)
         
-        # Création du canvas
-        img = Image.new('RGB', (IMG_WIDTH, IMG_HEIGHT), color=BG_COLOR)
+        # 1. Chargement et adaptation de l'image de fond
+        bg_path = Path("./cogs/R2P/assets/background.png")
+        try:
+            bg_img = Image.open(bg_path).convert('RGBA')
+            # ImageOps.fit recadre le fond proprement pour qu'il remplisse l'espace sans se déformer !
+            img = ImageOps.fit(bg_img, (IMG_WIDTH, IMG_HEIGHT), Image.Resampling.LANCZOS)
+        except IOError:
+            img = Image.new('RGBA', (IMG_WIDTH, IMG_HEIGHT), color=(24, 25, 28, 255))
+            
         draw = ImageDraw.Draw(img)
         
-        # Essai de chargement de polices standard (Arial ou similaire)
-        # Si ça échoue, on utilise la police par défaut
+        # 2. Polices
         try:
-            font_title = ImageFont.truetype("arial.ttf", 60)
-            font_starring = ImageFont.truetype("arial.ttf", 40)
+            font_title = ImageFont.truetype("./cogs/R2P/assets/titre.ttf", 80)
+            font_starring = ImageFont.truetype("./cogs/R2P/assets/sous_titre.ttf", 45)
         except IOError:
             font_title = ImageFont.load_default()
             font_starring = ImageFont.load_default()
             
-        # 1. Dessiner le titre "Now playing"
+        # 3. Titre
         title_text = "Now playing"
-        # draw.textbbox() remplace draw.textsize() dans les versions récentes de Pillow
         left, top, right, bottom = draw.textbbox((0, 0), title_text, font=font_title)
-        title_width = right - left
+        draw.text(((IMG_WIDTH - (right - left)) / 2, 40), title_text, font=font_title, fill=TEXT_COLOR)
         
-        draw.text(
-            ((IMG_WIDTH - title_width) / 2, 30), 
-            title_text, 
-            font=font_title, 
-            fill=TEXT_COLOR
-        )
-        
-        # 2. Dessiner "Starring"
+        # 4. Starring
         starring_text = "Starring"
         left, top, right, bottom = draw.textbbox((0, 0), starring_text, font=font_starring)
-        starring_width = right - left
+        draw.text(((IMG_WIDTH - (right - left)) / 2, 140), starring_text, font=font_starring, fill=TEXT_COLOR)
         
-        draw.text(
-            ((IMG_WIDTH - starring_width) / 2, 110), 
-            starring_text, 
-            font=font_starring, 
-            fill=TEXT_COLOR
-        )
-        
-        # 3. Charger et positionner les avatars
+        # 5. Avatars
         avatar_size = 150
-        spacing = 30
-        
+        spacing = 40
         num_avatars = len(members)
         total_width = (num_avatars * avatar_size) + ((num_avatars - 1) * spacing)
         start_x = (IMG_WIDTH - total_width) / 2
         
         for i, member in enumerate(members):
-            # Récupération de l'avatar (et de la version par défaut si besoin)
             avatar_url = member.display_avatar.with_format('png').url
             async with self.bot.session.get(avatar_url) as resp:
                 if resp.status == 200:
                     avatar_data = await resp.read()
-                    avatar_img = Image.open(io.BytesIO(avatar_data))
-                    
-                    # Redimensionnement et mise en cercle
+                    avatar_img = Image.open(io.BytesIO(avatar_data)).convert('RGBA')
                     avatar_img = avatar_img.resize((avatar_size, avatar_size), Image.Resampling.LANCZOS)
                     
-                    # Masque pour faire le cercle
                     mask = Image.new('L', (avatar_size, avatar_size), 0)
-                    mask_draw = ImageDraw.Draw(mask)
-                    mask_draw.ellipse((0, 0, avatar_size, avatar_size), fill=255)
+                    ImageDraw.Draw(mask).ellipse((0, 0, avatar_size, avatar_size), fill=255)
                     
-                    # Application du masque (on utilise l'image elle-même comme masque pour gérer la transparence)
-                    circular_avatar = ImageChops.composite(avatar_img, Image.new('RGBA', avatar_img.size, (0,0,0,0)), mask)
-                    circular_avatar = circular_avatar.convert('RGB') # Conversion finale en RGB pour coller sur le canvas
+                    pos_x = int(start_x + (i * (avatar_size + spacing)))
+                    img.paste(avatar_img, (pos_x, 230), mask)
 
-                    # Collage
-                    img.paste(circular_avatar, (int(start_x + (i * (avatar_size + spacing))), 180))
+        # 6. POCHETTES DE JEUX (NOUVEAU)
+        if show_games:
+            # Sous-titre "Pick your poison"
+            poison_text = "Pick your poison"
+            left, top, right, bottom = draw.textbbox((0, 0), poison_text, font=font_starring)
+            draw.text(((IMG_WIDTH - (right - left)) / 2, 420), poison_text, font=font_starring, fill=TEXT_COLOR)
             
-        # Sauvegarde de l'image dans un buffer mémoire
+            # Paramètres des pochettes
+            grid_w, grid_h = 200, 300
+            grid_spacing = 50
+            total_grid_w = (len(common_games) * grid_w) + ((len(common_games) - 1) * grid_spacing)
+            start_grid_x = (IMG_WIDTH - total_grid_w) / 2
+            
+            for i, game_name in enumerate(common_games):
+                img_bytes = await self.fetch_steamgrid_image(game_name)
+                if img_bytes:
+                    grid_img = Image.open(io.BytesIO(img_bytes)).convert('RGBA')
+                    grid_img = ImageOps.fit(grid_img, (grid_w, grid_h), Image.Resampling.LANCZOS)
+                    
+                    # Bonus : On ajoute des coins arrondis aux pochettes pour faire plus moderne !
+                    mask = Image.new('L', (grid_w, grid_h), 0)
+                    ImageDraw.Draw(mask).rounded_rectangle((0, 0, grid_w, grid_h), radius=15, fill=255)
+                    
+                    pos_x = int(start_grid_x + (i * (grid_w + grid_spacing)))
+                    img.paste(grid_img, (pos_x, 500), mask)
+            
+        # 7. Sauvegarde
         buffer = io.BytesIO()
         img.save(buffer, format='PNG')
         buffer.seek(0)
         return buffer
+
+    async def fetch_steamgrid_image(self, game_name: str) -> bytes | None:
+        """Cherche et télécharge la pochette 2:3 (600x900) d'un jeu via SteamGridDB."""
+        api_key = os.getenv("STEAMGRIDDB_API_KEY")
+        if not api_key:
+            print("⚠️ Clé API SteamGridDB manquante dans le .env")
+            return None
+            
+        headers = {"Authorization": f"Bearer {api_key}"}
+        
+        try:
+            # 1. Chercher l'ID du jeu (on encode le nom pour les espaces/caractères spéciaux)
+            safe_name = urllib.parse.quote(game_name)
+            search_url = f"https://www.steamgriddb.com/api/v2/search/autocomplete/{safe_name}"
+            
+            async with self.bot.session.get(search_url, headers=headers) as resp:
+                if resp.status != 200: return None
+                data = await resp.json()
+                if not data.get("data"): return None
+                game_id = data["data"][0]["id"]
+
+            # 2. Récupérer les images au format 2:3 (dimensions=600x900)
+            grids_url = f"https://www.steamgriddb.com/api/v2/grids/game/{game_id}?dimensions=600x900"
+            async with self.bot.session.get(grids_url, headers=headers) as resp:
+                if resp.status != 200: return None
+                data = await resp.json()
+                if not data.get("data"): return None
+                image_url = data["data"][0]["url"]
+
+            # 3. Télécharger l'image trouvée
+            async with self.bot.session.get(image_url) as resp:
+                if resp.status != 200: return None
+                return await resp.read()
+                
+        except Exception as e:
+            print(f"❌ Erreur lors de la récupération SteamGridDB pour {game_name}: {e}")
+            return None
 
 
     # --- GESTION DES JOUEURS ET DES RÔLES ---
@@ -268,13 +315,10 @@ class ReadyManager(commands.Cog):
                     inline=False
                 )
                 
-            # 2. GÉNÉRATION DE L'IMAGE (NOUVEAU)
+            # 2. GÉNÉRATION DE L'IMAGE
             if 2 <= len(ready_members) <= 5:
-                buffer = await self._generate_lfg_image(ready_members)
-                # On prépare le fichier pour l'envoi
+                buffer = await self._generate_lfg_image(ready_members, common_games)
                 lfg_file = discord.File(buffer, filename="lfg_image.png")
-                # On intègre l'image dans l'embed (attachment:// fait le lien)
-                embed.set_image(url="attachment://lfg_image.png")
 
         # 3. Suppression de l'ancienne annonce
         last_id = self._get_last_announcement_id()
