@@ -331,24 +331,30 @@ class ReadyManager(commands.Cog):
                 buffer = await self._generate_lfg_image(ready_members, common_games)
                 lfg_file = discord.File(buffer, filename="lfg_image.png")
 
-        # 3. Suppression de l'ancienne annonce
+        # 3. Récupération de l'ancienne annonce (sans la supprimer tout de suite)
         last_id = self._get_last_announcement_id()
+        old_msg = None
         if last_id:
             try:
                 old_msg = await channel.fetch_message(last_id)
-                await old_msg.delete()
             except (discord.NotFound, discord.Forbidden, discord.HTTPException):
-                # On ignore l'erreur : l'ancien message a probablement déjà été supprimé manuellement par un admin
                 pass 
                 
-        # 4. Envoi et sauvegarde de la nouvelle annonce (avec le fichier si présent)
+        # 4. Envoi et sauvegarde de la NOUVELLE annonce
+        # (L'upload prend un peu de temps, mais l'ancien message est toujours là pour faire patienter)
         if lfg_file:
-            # IMPORTANT : file= doit être dans l'envoi du message, pas dans l'embed
             new_msg = await channel.send(file=lfg_file, embed=embed)
         else:
             new_msg = await channel.send(embed=embed)
             
         self._save_last_announcement_id(new_msg.id)
+
+        # 5. Suppression de l'ANCIENNE annonce une fois la nouvelle bien affichée
+        if old_msg:
+            try:
+                await old_msg.delete()
+            except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                pass
 
 
     # --- CHRONOMÈTRES ET TIMERS ---
