@@ -502,9 +502,11 @@ class ReadyManager(commands.Cog):
     async def ready_cmd(self, interaction: discord.Interaction, delai: str = None):
         user_id = interaction.user.id
         guild = interaction.guild # Récupération de la guild
-        self.cancel_all_timers(user_id)
         
-        # Cas 1 : Ajout différé
+        # Ceci nettoie tous les chronos (gère parfaitement le joueur qui arrive en avance !)
+        self.cancel_all_timers(user_id) 
+        
+        # Cas 1 : Ajout différé (avec un délai)
         if delai and delai != "0":
             delay_sec = self.parse_time(delai)
             
@@ -522,6 +524,13 @@ class ReadyManager(commands.Cog):
                 )
                 return
                 
+            # --- NOUVEAU : Si le joueur était déjà prêt, on le retire immédiatement ---
+            if user_id in self.ready_players:
+                await self._remove_ready_player(user_id, guild)
+                await self.update_announcement(guild) # On met à jour l'annonce visuellement
+            # --------------------------------------------------------------------------
+
+            # On lance le chronomètre pour le rajouter plus tard (avec le quart d'heure de politesse s'il est hors-ligne)
             self.pending_timers[user_id] = asyncio.create_task(self.delayed_ready(interaction.user, delay_sec))
             
             heures = delay_sec // 3600
@@ -529,15 +538,16 @@ class ReadyManager(commands.Cog):
             temps_str = f"{heures}h{minutes:02d}" if heures > 0 else f"{minutes} minute(s)"
             
             await interaction.response.send_message(
-                f"✅ C'est noté ! Je t'ajouterai à la liste dans {temps_str} si tu es connecté.", 
+                f"✅ C'est noté ! Je t'ajouterai à la liste dans {temps_str} (si tu es connecté).", 
                 ephemeral=True
             )
             return
                 
-        # Cas 2 : Ajout immédiat
+        # Cas 2 : Ajout immédiat (sans délai ou délai = 0)
+        # _add_ready_player ignore silencieusement l'ajout si le joueur y est déjà, donc pas de risque de doublon.
         await self._add_ready_player(user_id, guild)
         
-        # Ajout de guild dans l'appel du timer
+        # Ajout de guild dans l'appel du timer d'expiration de 6 heures
         self.timeout_timers[user_id] = asyncio.create_task(self.auto_remove_timeout(user_id, guild))
         
         await interaction.response.send_message("✅ Tu es maintenant dans la liste des joueurs prêts.", ephemeral=True)
