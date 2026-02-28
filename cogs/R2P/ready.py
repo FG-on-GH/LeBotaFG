@@ -606,16 +606,24 @@ class ReadyManager(commands.Cog):
         user_id = interaction.user.id
         guild = interaction.guild # Récupération de la guild
         
-        if user_id not in self.ready_players:
+        # On vérifie s'il est dans la liste principale OU dans la liste d'attente
+        is_ready = user_id in self.ready_players
+        is_pending = user_id in self.pending_arrivals
+        
+        if not is_ready and not is_pending:
             await interaction.response.send_message("Tu n'étais pas dans la liste.", ephemeral=True)
             return
 
-        await self._remove_ready_player(user_id, guild)
+        # S'il était officiellement prêt, on le retire (enlève le rôle, etc.)
+        if is_ready:
+            await self._remove_ready_player(user_id, guild)
+            
+        # On annule tous ses chronos en cours (ce qui le retirera aussi de pending_arrivals s'il y était)
         self.cancel_all_timers(user_id)
 
         await interaction.response.send_message("✅ Tu as été retiré de la liste.", ephemeral=True)
+        # On met à jour l'annonce pour faire disparaître son pseudo
         await self.update_announcement(guild)
-
 
     @commands.Cog.listener()
     async def on_ready(self):
