@@ -52,27 +52,35 @@ class ReadyManager(commands.Cog):
     # --- GENERATION D'IMAGES ---
 
     async def _generate_lfg_image(self, members: list[discord.Member], common_games: list[str]) -> io.BytesIO:
-        """Génère l'image LFG avec fond aléatoire, avatars ronds et pochettes SteamGridDB."""
-        IMG_WIDTH = 1000
+        """Génère l'image LFG dynamiquement selon le nombre de joueurs et de jeux."""
+        
+        show_avatars = len(members) <= 5
         show_games = 1 <= len(common_games) <= 3
-        IMG_HEIGHT = 900 if show_games else 500
+        
+        IMG_WIDTH = 1000
         TEXT_COLOR = (255, 255, 255, 255)
         
+        # Hauteur dynamique selon le contenu
+        if show_avatars and show_games:
+            IMG_HEIGHT = 900
+        elif show_games:
+            IMG_HEIGHT = 600  # 600px laisse assez de marge pour les grandes pochettes
+        else:
+            IMG_HEIGHT = 500
+
         BASE_DIR = Path(__file__).parent
         ASSETS_DIR = BASE_DIR / "assets"
         
-        # --- NOUVEAU : SÉLECTION ALÉATOIRE DES ASSETS ---
-        # On liste les fichiers dans les sous-dossiers
+        # --- SÉLECTION ALÉATOIRE DES ASSETS ---
         bg_files = list((ASSETS_DIR / "backgrounds").glob("*.png")) + list((ASSETS_DIR / "backgrounds").glob("*.jpg"))
         title_files = list((ASSETS_DIR / "titres").glob("*.ttf"))
         subtitle_files = list((ASSETS_DIR / "sous_titres").glob("*.ttf"))
         
-        # On choisit au hasard (avec un plan B si les dossiers sont vides ou introuvables)
         bg_path = random.choice(bg_files) if bg_files else ASSETS_DIR / "background.png"
         title_path = random.choice(title_files) if title_files else ASSETS_DIR / "titre.ttf"
         subtitle_path = random.choice(subtitle_files) if subtitle_files else ASSETS_DIR / "sous_titre.ttf"
         
-        # 1. Chargement et adaptation de l'image de fond
+        # 1. Chargement du fond
         try:
             bg_img = Image.open(bg_path).convert('RGBA')
             img = ImageOps.fit(bg_img, (IMG_WIDTH, IMG_HEIGHT), Image.Resampling.LANCZOS)
@@ -82,57 +90,66 @@ class ReadyManager(commands.Cog):
             
         draw = ImageDraw.Draw(img)
         
-        # 2. Polices (Chargées une seule fois pour toute l'image)
+        # 2. Polices
         try:
             font_title = ImageFont.truetype(str(title_path), 80)
-            # Cette police servira pour tous les sous-titres, assurant qu'ils soient identiques !
             font_starring = ImageFont.truetype(str(subtitle_path), 45) 
         except IOError as e:
             print(f"⚠️ Erreur chargement polices : {e}")
             font_title = ImageFont.load_default()
             font_starring = ImageFont.load_default()
             
-        # 3. Titre
+        # 3. Titre (Toujours tout en haut)
         title_text = "Now playing"
         left, top, right, bottom = draw.textbbox((0, 0), title_text, font=font_title)
         draw.text(((IMG_WIDTH - (right - left)) / 2, 15), title_text, font=font_title, fill=TEXT_COLOR)
         
-        # 4. Starring
-        starring_text = "Starring"
-        left, top, right, bottom = draw.textbbox((0, 0), starring_text, font=font_starring)
-        draw.text(((IMG_WIDTH - (right - left)) / 2, 150), starring_text, font=font_starring, fill=TEXT_COLOR)
+        # Curseur vertical dynamique : il commence à 150px du haut
+        current_y = 150 
         
-        # 5. Avatars
-        avatar_size = 150
-        spacing = 40
-        num_avatars = len(members)
-        total_width = (num_avatars * avatar_size) + ((num_avatars - 1) * spacing)
-        start_x = (IMG_WIDTH - total_width) / 2
-        
-        for i, member in enumerate(members):
-            avatar_url = member.display_avatar.with_format('png').url
-            async with self.bot.session.get(avatar_url) as resp:
-                if resp.status == 200:
-                    avatar_data = await resp.read()
-                    avatar_img = Image.open(io.BytesIO(avatar_data)).convert('RGBA')
-                    avatar_img = avatar_img.resize((avatar_size, avatar_size), Image.Resampling.LANCZOS)
-                    
-                    mask = Image.new('L', (avatar_size, avatar_size), 0)
-                    ImageDraw.Draw(mask).ellipse((0, 0, avatar_size, avatar_size), fill=255)
-                    
-                    pos_x = int(start_x + (i * (avatar_size + spacing)))
-                    img.paste(avatar_img, (pos_x, 230), mask)
+        # 4. AVATARS (S'ils doivent être affichés)
+        if show_avatars:
+            starring_text = "Starring"
+            left, top, right, bottom = draw.textbbox((0, 0), starring_text, font=font_starring)
+            draw.text(((IMG_WIDTH - (right - left)) / 2, current_y), starring_text, font=font_starring, fill=TEXT_COLOR)
+            
+            avatar_size = 150
+            spacing = 40
+            num_avatars = len(members)
+            total_width = (num_avatars * avatar_size) + ((num_avatars - 1) * spacing)
+            start_x = (IMG_WIDTH - total_width) / 2
+            
+            avatar_y = current_y + 80
+            
+            for i, member in enumerate(members):
+                avatar_url = member.display_avatar.with_format('png').url
+                async with self.bot.session.get(avatar_url) as resp:
+                    if resp.status == 200:
+                        avatar_data = await resp.read()
+                        avatar_img = Image.open(io.BytesIO(avatar_data)).convert('RGBA')
+                        avatar_img = avatar_img.resize((avatar_size, avatar_size), Image.Resampling.LANCZOS)
+                        
+                        mask = Image.new('L', (avatar_size, avatar_size), 0)
+                        ImageDraw.Draw(mask).ellipse((0, 0, avatar_size, avatar_size), fill=255)
+                        
+                        pos_x = int(start_x + (i * (avatar_size + spacing)))
+                        img.paste(avatar_img, (pos_x, avatar_y), mask)
+            
+            # On descend le curseur pour la section suivante s'il y en a une
+            current_y = avatar_y + avatar_size + 40 
 
-        # 6. POCHETTES DE JEUX
+        # 5. POCHETTES DE JEUX (Si elles doivent être affichées)
         if show_games:
             poison_text = "Pick your poison"
             left, top, right, bottom = draw.textbbox((0, 0), poison_text, font=font_starring)
-            draw.text(((IMG_WIDTH - (right - left)) / 2, 420), poison_text, font=font_starring, fill=TEXT_COLOR)
+            draw.text(((IMG_WIDTH - (right - left)) / 2, current_y), poison_text, font=font_starring, fill=TEXT_COLOR)
             
             grid_w, grid_h = 200, 300
             grid_spacing = 50
             total_grid_w = (len(common_games) * grid_w) + ((len(common_games) - 1) * grid_spacing)
             start_grid_x = (IMG_WIDTH - total_grid_w) / 2
+            
+            game_y = current_y + 80
             
             for i, game_name in enumerate(common_games):
                 img_bytes = await self.fetch_steamgrid_image(game_name)
@@ -144,9 +161,9 @@ class ReadyManager(commands.Cog):
                     ImageDraw.Draw(mask).rounded_rectangle((0, 0, grid_w, grid_h), radius=15, fill=255)
                     
                     pos_x = int(start_grid_x + (i * (grid_w + grid_spacing)))
-                    img.paste(grid_img, (pos_x, 500), mask)
+                    img.paste(grid_img, (pos_x, game_y), mask)
             
-        # 7. Sauvegarde
+        # 6. Sauvegarde
         buffer = io.BytesIO()
         img.save(buffer, format='PNG')
         buffer.seek(0)
@@ -337,7 +354,12 @@ class ReadyManager(commands.Cog):
                 )
                 
             # 2. GÉNÉRATION DE L'IMAGE
-            if 2 <= len(ready_members) <= 5:
+            # On vérifie indépendamment les deux conditions
+            show_avatars = len(ready_members) <= 5
+            show_games = 1 <= len(common_games) <= 3
+            
+            # Si au moins l'une des deux conditions est remplie, on génère l'image
+            if show_avatars or show_games:
                 buffer = await self._generate_lfg_image(ready_members, common_games)
                 lfg_file = discord.File(buffer, filename="lfg_image.png")
 
