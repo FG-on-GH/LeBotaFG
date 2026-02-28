@@ -95,12 +95,12 @@ class ReadyManager(commands.Cog):
         # 3. Titre
         title_text = "Now playing"
         left, top, right, bottom = draw.textbbox((0, 0), title_text, font=font_title)
-        draw.text(((IMG_WIDTH - (right - left)) / 2, 40), title_text, font=font_title, fill=TEXT_COLOR)
+        draw.text(((IMG_WIDTH - (right - left)) / 2, 15), title_text, font=font_title, fill=TEXT_COLOR)
         
         # 4. Starring
         starring_text = "Starring"
         left, top, right, bottom = draw.textbbox((0, 0), starring_text, font=font_starring)
-        draw.text(((IMG_WIDTH - (right - left)) / 2, 140), starring_text, font=font_starring, fill=TEXT_COLOR)
+        draw.text(((IMG_WIDTH - (right - left)) / 2, 150), starring_text, font=font_starring, fill=TEXT_COLOR)
         
         # 5. Avatars
         avatar_size = 150
