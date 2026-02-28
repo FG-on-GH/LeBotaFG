@@ -35,9 +35,13 @@ class ReadyManager(commands.Cog):
         self.announcement_file = Path("./cogs/R2P/last_announcement_id.json")
         
         # Dictionnaires pour stocker les tâches asynchrones (chronomètres) par ID utilisateur
+        # offline_timers : Gère les 5 minutes avant retrait d'un joueur déconnecté
         self.offline_timers: dict[int, asyncio.Task] = {}
+        # timeout_timers : Gère les 6 heures max de présence dans la liste (anti-oubli)
         self.timeout_timers: dict[int, asyncio.Task] = {}
+        # pending_timers : Gère les joueurs qui ont fait "/ready 1h" (en attente d'ajout)
         self.pending_timers: dict[int, asyncio.Task] = {}
+        # grace_timers : Gère les 15 minutes accordées à un joueur en retard pour se connecter
         self.grace_timers: dict[int, asyncio.Task] = {}
         
         # Chargement initial des jeux
@@ -332,6 +336,7 @@ class ReadyManager(commands.Cog):
                 old_msg = await channel.fetch_message(last_id)
                 await old_msg.delete()
             except (discord.NotFound, discord.Forbidden, discord.HTTPException):
+                # On ignore l'erreur : l'ancien message a probablement déjà été supprimé manuellement par un admin
                 pass 
                 
         # 4. Envoi et sauvegarde de la nouvelle annonce (avec le fichier si présent)
