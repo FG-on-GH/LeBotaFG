@@ -235,6 +235,7 @@ class ReadyManager(commands.Cog):
     def find_common_games(self) -> tuple[list[str], list[int]]:
         """
         Croise les bibliothèques des joueurs prêts.
+        Retourne : (Liste des jeux en commun formatés, Liste des joueurs sans jeu)
         """
         sets_of_games = []
         excluded_users = []
@@ -246,11 +247,15 @@ class ReadyManager(commands.Cog):
             else:
                 excluded_users.append(uid)
         
-        if not sets_of_games:
+        # MODIFICATION ICI : S'il y a 1 seul (ou aucun) joueur avec des jeux, 
+        # on ne cherche pas de points communs.
+        if len(sets_of_games) <= 1:
             return [], excluded_users
 
+        # Intersection de tous les sets de jeux
         common_games = set.intersection(*sets_of_games)
         
+        # On récupère les noms d'affichage et on les trie par ordre alphabétique
         pretty_games = sorted(
             [game_display_names.get(game, game) for game in common_games],
             key=str.casefold
