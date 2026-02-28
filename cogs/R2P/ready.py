@@ -8,6 +8,9 @@ import re
 from pathlib import Path
 from dotenv import load_dotenv
 
+import io
+from PIL import Image, ImageDraw, ImageFont, ImageChops
+
 # Importation de notre nouvelle base de données
 from cogs.R2P.game_data import player_games, game_display_names, load_data
 
@@ -17,7 +20,7 @@ class ReadyManager(commands.Cog):
     """
     Cog gérant le système de matchmaking (LFG - Looking For Group).
     Permet aux joueurs de se déclarer prêts, calcule les jeux en commun,
-    et maintient une annonce à jour dans un salon dédié.
+    et maintient une annonce à jour dans un salon dédié avec une image dynamique.
     """
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -38,54 +41,132 @@ class ReadyManager(commands.Cog):
         load_data()
 
 
+    # --- GENERATION D'IMAGES (NOUVEAU) ---
+
+    async def _generate_lfg_image(self, members: list[discord.Member]) -> io.BytesIO:
+        """Génère l'image LFG 'Now playing' avec les avatars."""
+        # Configuration de base
+        IMG_WIDTH = 1000
+        IMG_HEIGHT = 500
+        BG_COLOR = (24, 25, 28) # Gris foncé type Discord
+        TEXT_COLOR = (255, 255, 255) # Blanc
+        
+        # Création du canvas
+        img = Image.new('RGB', (IMG_WIDTH, IMG_HEIGHT), color=BG_COLOR)
+        draw = ImageDraw.Draw(img)
+        
+        # Essai de chargement de polices standard (Arial ou similaire)
+        # Si ça échoue, on utilise la police par défaut
+        try:
+            font_title = ImageFont.truetype("arial.ttf", 60)
+            font_starring = ImageFont.truetype("arial.ttf", 40)
+        except IOError:
+            font_title = ImageFont.load_default()
+            font_starring = ImageFont.load_default()
+            
+        # 1. Dessiner le titre "Now playing"
+        title_text = "Now playing"
+        # draw.textbbox() remplace draw.textsize() dans les versions récentes de Pillow
+        left, top, right, bottom = draw.textbbox((0, 0), title_text, font=font_title)
+        title_width = right - left
+        
+        draw.text(
+            ((IMG_WIDTH - title_width) / 2, 30), 
+            title_text, 
+            font=font_title, 
+            fill=TEXT_COLOR
+        )
+        
+        # 2. Dessiner "Starring"
+        starring_text = "Starring"
+        left, top, right, bottom = draw.textbbox((0, 0), starring_text, font=font_starring)
+        starring_width = right - left
+        
+        draw.text(
+            ((IMG_WIDTH - starring_width) / 2, 110), 
+            starring_text, 
+            font=font_starring, 
+            fill=TEXT_COLOR
+        )
+        
+        # 3. Charger et positionner les avatars
+        avatar_size = 150
+        spacing = 30
+        
+        num_avatars = len(members)
+        total_width = (num_avatars * avatar_size) + ((num_avatars - 1) * spacing)
+        start_x = (IMG_WIDTH - total_width) / 2
+        
+        for i, member in enumerate(members):
+            # Récupération de l'avatar (et de la version par défaut si besoin)
+            avatar_url = member.display_avatar.with_format('png').url
+            async with self.bot.session.get(avatar_url) as resp:
+                if resp.status == 200:
+                    avatar_data = await resp.read()
+                    avatar_img = Image.open(io.BytesIO(avatar_data))
+                    
+                    # Redimensionnement et mise en cercle
+                    avatar_img = avatar_img.resize((avatar_size, avatar_size), Image.Resampling.LANCZOS)
+                    
+                    # Masque pour faire le cercle
+                    mask = Image.new('L', (avatar_size, avatar_size), 0)
+                    mask_draw = ImageDraw.Draw(mask)
+                    mask_draw.ellipse((0, 0, avatar_size, avatar_size), fill=255)
+                    
+                    # Application du masque (on utilise l'image elle-même comme masque pour gérer la transparence)
+                    circular_avatar = ImageChops.composite(avatar_img, Image.new('RGBA', avatar_img.size, (0,0,0,0)), mask)
+                    circular_avatar = circular_avatar.convert('RGB') # Conversion finale en RGB pour coller sur le canvas
+
+                    # Collage
+                    img.paste(circular_avatar, (int(start_x + (i * (avatar_size + spacing))), 180))
+            
+        # Sauvegarde de l'image dans un buffer mémoire
+        buffer = io.BytesIO()
+        img.save(buffer, format='PNG')
+        buffer.seek(0)
+        return buffer
+
+
     # --- GESTION DES JOUEURS ET DES RÔLES ---
 
-    async def _update_role(self, user_id: int, add: bool):
+    async def _update_role(self, user_id: int, guild: discord.Guild, add: bool):
         """Ajoute (add=True) ou retire (add=False) le rôle 'Ready to play' au joueur."""
         role_id_str = os.getenv('READY_ROLE_ID')
         if not role_id_str:
-            return # Aucun ID de rôle configuré dans le .env
+            return
             
         try:
             role_id = int(role_id_str)
-            # On utilise le channel d'annonce pour retrouver le serveur (guild)
-            channel_id = int(os.getenv('READY_CHANNEL_ID', 0))
-            channel = self.bot.get_channel(channel_id)
-            if not channel:
-                return
-                
-            guild = channel.guild
             member = guild.get_member(user_id)
             if not member:
-                return # Le membre n'a pas été trouvé sur le serveur
+                return
                 
             role = guild.get_role(role_id)
             if not role:
                 print("⚠️ Attention : Le rôle spécifié dans READY_ROLE_ID est introuvable sur le serveur.")
                 return
                 
-            # Modification du rôle
             if add and role not in member.roles:
                 await member.add_roles(role)
             elif not add and role in member.roles:
                 await member.remove_roles(role)
                 
         except discord.Forbidden:
-            print("❌ Erreur : Le bot n'a pas les permissions de modifier ce rôle (vérifiez la hiérarchie des rôles).")
+            print("❌ Erreur : Le bot n'a pas les permissions de modifier ce rôle.")
         except Exception as e:
             print(f"❌ Erreur lors de la modification du rôle : {e}")
 
-    async def _add_ready_player(self, user_id: int):
+    async def _add_ready_player(self, user_id: int, guild: discord.Guild):
         """Ajoute le joueur à la liste et lui donne le rôle."""
         if user_id not in self.ready_players:
             self.ready_players.append(user_id)
-            await self._update_role(user_id, add=True)
+            await self._update_role(user_id, guild, add=True)
 
-    async def _remove_ready_player(self, user_id: int):
+    async def _remove_ready_player(self, user_id: int, guild: discord.Guild):
         """Retire le joueur de la liste et lui enlève le rôle."""
         if user_id in self.ready_players:
             self.ready_players.remove(user_id)
-            await self._update_role(user_id, add=False)
+            await self._update_role(user_id, guild, add=False)
 
 
     # --- GESTION DE L'ANNONCE ---
@@ -107,7 +188,6 @@ class ReadyManager(commands.Cog):
     def find_common_games(self) -> tuple[list[str], list[int]]:
         """
         Croise les bibliothèques des joueurs prêts.
-        Retourne : (Liste des jeux en commun formatés, Liste des joueurs sans jeu)
         """
         sets_of_games = []
         excluded_users = []
@@ -122,10 +202,8 @@ class ReadyManager(commands.Cog):
         if not sets_of_games:
             return [], excluded_users
 
-        # Intersection de tous les sets de jeux
         common_games = set.intersection(*sets_of_games)
         
-        # On récupère les noms d'affichage et on les trie par ordre alphabétique
         pretty_games = sorted(
             [game_display_names.get(game, game) for game in common_games],
             key=str.casefold
@@ -133,14 +211,23 @@ class ReadyManager(commands.Cog):
         
         return pretty_games, excluded_users
 
-    async def update_announcement(self):
-        """Génère l'annonce Embed, supprime l'ancienne et publie la nouvelle."""
+    async def update_announcement(self, guild: discord.Guild):
+        """Génère l'annonce Embed, l'image, supprime l'ancienne et publie la nouvelle."""
         channel_id = int(os.getenv('READY_CHANNEL_ID', 0))
         channel = self.bot.get_channel(channel_id)
         
         if not channel:
-            print("⚠️ Attention : Salon d'annonce introuvable (Vérifiez READY_CHANNEL_ID dans le .env).")
+            print("⚠️ Attention : Salon d'annonce introuvable.")
             return
+
+        # 0. Préparation des variables d'image
+        lfg_file = None
+        ready_members = []
+        
+        # Résolution des membres
+        for uid in self.ready_players:
+            member = guild.get_member(uid)
+            if member: ready_members.append(member)
 
         # 1. Construction de l'Embed
         if not self.ready_players:
@@ -180,8 +267,16 @@ class ReadyManager(commands.Cog):
                     value=f"{excluded_str}\n*Utilisez `/addgame` pour en ajouter puis refaites `/ready`.*", 
                     inline=False
                 )
+                
+            # 2. GÉNÉRATION DE L'IMAGE (NOUVEAU)
+            if 2 <= len(ready_members) <= 5:
+                buffer = await self._generate_lfg_image(ready_members)
+                # On prépare le fichier pour l'envoi
+                lfg_file = discord.File(buffer, filename="lfg_image.png")
+                # On intègre l'image dans l'embed (attachment:// fait le lien)
+                embed.set_image(url="attachment://lfg_image.png")
 
-        # 2. Suppression de l'ancienne annonce
+        # 3. Suppression de l'ancienne annonce
         last_id = self._get_last_announcement_id()
         if last_id:
             try:
@@ -190,8 +285,13 @@ class ReadyManager(commands.Cog):
             except (discord.NotFound, discord.Forbidden, discord.HTTPException):
                 pass 
                 
-        # 3. Envoi et sauvegarde de la nouvelle annonce
-        new_msg = await channel.send(embed=embed)
+        # 4. Envoi et sauvegarde de la nouvelle annonce (avec le fichier si présent)
+        if lfg_file:
+            # IMPORTANT : file= doit être dans l'envoi du message, pas dans l'embed
+            new_msg = await channel.send(file=lfg_file, embed=embed)
+        else:
+            new_msg = await channel.send(embed=embed)
+            
         self._save_last_announcement_id(new_msg.id)
 
 
@@ -204,12 +304,12 @@ class ReadyManager(commands.Cog):
                 timer_dict[user_id].cancel()
                 del timer_dict[user_id]
 
-    async def auto_remove_offline(self, user_id: int):
+    async def auto_remove_offline(self, user_id: int, guild: discord.Guild):
         """Retire le joueur après 5 minutes de déconnexion."""
         try:
             await asyncio.sleep(5 * 60) # 5 minutes
             
-            await self._remove_ready_player(user_id)
+            await self._remove_ready_player(user_id, guild)
             
             # Nettoyage global
             if user_id in self.offline_timers: del self.offline_timers[user_id]
@@ -217,23 +317,23 @@ class ReadyManager(commands.Cog):
                 self.timeout_timers[user_id].cancel()
                 del self.timeout_timers[user_id]
 
-            await self.update_announcement()
+            await self.update_announcement(guild)
         except asyncio.CancelledError:
             pass # Le timer a été annulé car le joueur s'est reconnecté
     
-    async def auto_remove_timeout(self, user_id: int):
+    async def auto_remove_timeout(self, user_id: int, guild: discord.Guild):
         """Retire le joueur automatiquement au bout de 6 heures."""
         try:
             await asyncio.sleep(6 * 60 * 60) # 6 heures
             
-            await self._remove_ready_player(user_id)
+            await self._remove_ready_player(user_id, guild)
             
             if user_id in self.timeout_timers: del self.timeout_timers[user_id]
             if user_id in self.offline_timers:
                 self.offline_timers[user_id].cancel()
                 del self.offline_timers[user_id]
 
-            await self.update_announcement()
+            await self.update_announcement(guild)
         except asyncio.CancelledError:
             pass
             
@@ -252,18 +352,20 @@ class ReadyManager(commands.Cog):
             await asyncio.sleep(delay_sec)
             
             user_id = member.id
+            guild = member.guild # Récupération de la guild
+            
             if user_id in self.pending_timers:
                 del self.pending_timers[user_id]
                 
-            guild = member.guild
             updated_member = guild.get_member(user_id)
             if not updated_member: return
             
             # Si le joueur est en ligne, on l'ajoute !
             if updated_member.status != discord.Status.offline:
-                await self._add_ready_player(user_id)
-                self.timeout_timers[user_id] = asyncio.create_task(self.auto_remove_timeout(user_id))
-                await self.update_announcement()
+                await self._add_ready_player(user_id, guild)
+                # Ajout de guild dans l'appel du timer
+                self.timeout_timers[user_id] = asyncio.create_task(self.auto_remove_timeout(user_id, guild))
+                await self.update_announcement(guild)
             else:
                 # S'il est hors-ligne, on lance la période de grâce de 15 minutes
                 self.grace_timers[user_id] = asyncio.create_task(self.grace_period(user_id))
@@ -305,6 +407,7 @@ class ReadyManager(commands.Cog):
     @app_commands.describe(delai="Dans combien de temps es-tu dispo ? (ex: 15m, 1h30, 90)")
     async def ready_cmd(self, interaction: discord.Interaction, delai: str = None):
         user_id = interaction.user.id
+        guild = interaction.guild # Récupération de la guild
         self.cancel_all_timers(user_id)
         
         # Cas 1 : Ajout différé
@@ -338,67 +441,75 @@ class ReadyManager(commands.Cog):
             return
                 
         # Cas 2 : Ajout immédiat
-        await self._add_ready_player(user_id)
-            
-        self.timeout_timers[user_id] = asyncio.create_task(self.auto_remove_timeout(user_id))
+        await self._add_ready_player(user_id, guild)
+        
+        # Ajout de guild dans l'appel du timer
+        self.timeout_timers[user_id] = asyncio.create_task(self.auto_remove_timeout(user_id, guild))
         
         await interaction.response.send_message("✅ Tu es maintenant dans la liste des joueurs prêts.", ephemeral=True)
-        await self.update_announcement()
+        await self.update_announcement(guild)
 
 
     @app_commands.command(name="unready", description="Te retire de la liste des joueurs prêts")
     async def unready_cmd(self, interaction: discord.Interaction):
         user_id = interaction.user.id
+        guild = interaction.guild # Récupération de la guild
         
         if user_id not in self.ready_players:
             await interaction.response.send_message("Tu n'étais pas dans la liste.", ephemeral=True)
             return
 
-        await self._remove_ready_player(user_id)
+        await self._remove_ready_player(user_id, guild)
         self.cancel_all_timers(user_id)
 
         await interaction.response.send_message("✅ Tu as été retiré de la liste.", ephemeral=True)
-        await self.update_announcement()
+        await self.update_announcement(guild)
 
 
     @commands.Cog.listener()
     async def on_ready(self):
-        """Réinitialise la liste au démarrage du bot."""
+        """Réinitialise la liste et sécurise les rôles au démarrage du bot."""
         self.ready_players.clear()
         
+        # Récupération de la guild via le channel id
+        channel_id = int(os.getenv('READY_CHANNEL_ID', 0))
+        channel = self.bot.get_channel(channel_id)
+        if not channel:
+            print("⚠️ Attention : Salon d'annonce introuvable au démarrage.")
+            return
+        
+        guild = channel.guild
+
         # Nettoyage de sécurité : on retire le rôle à tout le monde au redémarrage
-        # Pour éviter que quelqu'un garde le rôle alors qu'il n'est plus dans la liste interne du bot
         role_id_str = os.getenv('READY_ROLE_ID')
         if role_id_str:
-            channel_id = int(os.getenv('READY_CHANNEL_ID', 0))
-            channel = self.bot.get_channel(channel_id)
-            if channel:
-                guild = channel.guild
-                role = guild.get_role(int(role_id_str))
-                if role:
-                    for member in role.members:
-                        try:
-                            await member.remove_roles(role)
-                        except discord.Forbidden:
-                            print("❌ Permissions insuffisantes pour nettoyer les rôles au démarrage.")
-                            break # On arrête la boucle si on n'a pas les droits
+            role = guild.get_role(int(role_id_str))
+            if role:
+                for member in role.members:
+                    try:
+                        await member.remove_roles(role)
+                    except discord.Forbidden:
+                        print("❌ Permissions insuffisantes pour nettoyer les rôles au démarrage.")
+                        break 
                             
-        await self.update_announcement()
+        await self.update_announcement(guild)
 
 
     @commands.Cog.listener()
     async def on_presence_update(self, before: discord.Member, after: discord.Member):
         """Surveille les connexions/déconnexions des joueurs impliqués."""
         user_id = after.id
+        guild = after.guild # Récupération de la guild
 
         # 1. Période de grâce (le joueur devait se connecter)
         if after.status != discord.Status.offline and user_id in self.grace_timers:
             self.grace_timers[user_id].cancel()
             del self.grace_timers[user_id]
             
-            await self._add_ready_player(user_id)
-            self.timeout_timers[user_id] = asyncio.create_task(self.auto_remove_timeout(user_id))
-            await self.update_announcement()
+            await self._add_ready_player(user_id, guild)
+            # Ajout de guild dans l'appel du timer
+            self.timeout_timers[user_id] = asyncio.create_task(self.auto_remove_timeout(user_id, guild))
+            await self.update_announcement(guild)
             return
 
         # 2. Gestion des déconnexions (5 minutes)
@@ -407,7 +518,8 @@ class ReadyManager(commands.Cog):
 
         if after.status == discord.Status.offline:
             if user_id not in self.offline_timers:
-                self.offline_timers[user_id] = asyncio.create_task(self.auto_remove_offline(user_id))
+                # Ajout de guild dans l'appel du timer
+                self.offline_timers[user_id] = asyncio.create_task(self.auto_remove_offline(user_id, guild))
         elif after.status != discord.Status.offline:
             if user_id in self.offline_timers:
                 self.offline_timers[user_id].cancel()
@@ -415,4 +527,9 @@ class ReadyManager(commands.Cog):
 
 
 async def setup(bot: commands.Bot):
+    # Ajout d'une session aiohttp au bot pour télécharger les avatars
+    import aiohttp
+    if not hasattr(bot, 'session') or bot.session.closed:
+        bot.session = aiohttp.ClientSession()
+        
     await bot.add_cog(ReadyManager(bot))
