@@ -61,6 +61,10 @@ class ManageGames(commands.Cog):
         save_data()
         await interaction.response.send_message(validation_message, ephemeral=True)
 
+        ready_cog = self.bot.get_cog('ReadyManager')
+        if ready_cog and interaction.user.id in ready_cog.ready_players:
+            await ready_cog.update_announcement(interaction.guild)
+
     @app_commands.command(name='removegame', description='Retire des jeux de ta bibliothèque (sépare les titres par des virgules)')
     async def removegame(self, interaction: discord.Interaction, jeux: str):
         """Commande pour retirer un ou plusieurs jeux."""
@@ -94,6 +98,10 @@ class ManageGames(commands.Cog):
         
         save_data()
         await interaction.response.send_message(validation_message, ephemeral=True)
+
+        ready_cog = self.bot.get_cog('ReadyManager')
+        if ready_cog and interaction.user.id in ready_cog.ready_players:
+            await ready_cog.update_announcement(interaction.guild)
 
     @app_commands.command(name='mygames', description='Affiche tes jeux enregistrés dans la base de données')
     async def mygames(self, interaction: discord.Interaction):
