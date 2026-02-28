@@ -5,6 +5,7 @@ import os
 import json
 import asyncio
 import re
+import random
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -51,32 +52,41 @@ class ReadyManager(commands.Cog):
     # --- GENERATION D'IMAGES ---
 
     async def _generate_lfg_image(self, members: list[discord.Member], common_games: list[str]) -> io.BytesIO:
-        """Génère l'image LFG avec fond, avatars ronds et pochettes SteamGridDB."""
+        """Génère l'image LFG avec fond aléatoire, avatars ronds et pochettes SteamGridDB."""
         IMG_WIDTH = 1000
-        # On allonge l'image à 900px si on doit afficher des jeux, sinon on garde 500px
         show_games = 1 <= len(common_games) <= 3
         IMG_HEIGHT = 900 if show_games else 500
         TEXT_COLOR = (255, 255, 255, 255)
         
-        # ---> NOUVEAU : On récupère le dossier exact de ready.py
         BASE_DIR = Path(__file__).parent
+        ASSETS_DIR = BASE_DIR / "assets"
+        
+        # --- NOUVEAU : SÉLECTION ALÉATOIRE DES ASSETS ---
+        # On liste les fichiers dans les sous-dossiers
+        bg_files = list((ASSETS_DIR / "backgrounds").glob("*.png")) + list((ASSETS_DIR / "backgrounds").glob("*.jpg"))
+        title_files = list((ASSETS_DIR / "titres").glob("*.ttf"))
+        subtitle_files = list((ASSETS_DIR / "sous_titres").glob("*.ttf"))
+        
+        # On choisit au hasard (avec un plan B si les dossiers sont vides ou introuvables)
+        bg_path = random.choice(bg_files) if bg_files else ASSETS_DIR / "background.png"
+        title_path = random.choice(title_files) if title_files else ASSETS_DIR / "titre.ttf"
+        subtitle_path = random.choice(subtitle_files) if subtitle_files else ASSETS_DIR / "sous_titre.ttf"
         
         # 1. Chargement et adaptation de l'image de fond
-        bg_path = BASE_DIR / "assets" / "background.png"
         try:
             bg_img = Image.open(bg_path).convert('RGBA')
             img = ImageOps.fit(bg_img, (IMG_WIDTH, IMG_HEIGHT), Image.Resampling.LANCZOS)
         except IOError as e:
-            print(f"⚠️ Erreur chargement fond : {e}") 
+            print(f"⚠️ Erreur chargement fond ({bg_path}) : {e}") 
             img = Image.new('RGBA', (IMG_WIDTH, IMG_HEIGHT), color=(24, 25, 28, 255))
             
         draw = ImageDraw.Draw(img)
         
-        # 2. Polices
+        # 2. Polices (Chargées une seule fois pour toute l'image)
         try:
-            # On convertit en string car certaines vieilles versions de Pillow n'aiment pas les objets Path
-            font_title = ImageFont.truetype(str(BASE_DIR / "assets" / "titre.ttf"), 80)
-            font_starring = ImageFont.truetype(str(BASE_DIR / "assets" / "sous_titre.ttf"), 45)
+            font_title = ImageFont.truetype(str(title_path), 80)
+            # Cette police servira pour tous les sous-titres, assurant qu'ils soient identiques !
+            font_starring = ImageFont.truetype(str(subtitle_path), 45) 
         except IOError as e:
             print(f"⚠️ Erreur chargement polices : {e}")
             font_title = ImageFont.load_default()
