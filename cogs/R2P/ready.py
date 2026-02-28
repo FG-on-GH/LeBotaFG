@@ -49,6 +49,8 @@ class ReadyManager(commands.Cog):
         self.pending_timers: dict[int, asyncio.Task] = {}
         # Stocke le timestamp (l'heure exacte) d'arrivée prévue
         self.pending_arrivals: dict[int, float] = {}
+        # voice_disconnect_timers : Gère les 30 min après avoir quitté un vocal
+        self.voice_disconnect_timers: dict[int, asyncio.Task] = {}
         
         # Chargement initial des jeux
         load_data()
@@ -417,7 +419,8 @@ class ReadyManager(commands.Cog):
 
     def cancel_all_timers(self, user_id: int):
         """Annule tous les chronomètres liés à un joueur pour éviter les conflits."""
-        for timer_dict in [self.offline_timers, self.timeout_timers, self.pending_timers, self.grace_timers]:
+        # AJOUT de self.voice_disconnect_timers dans la liste
+        for timer_dict in [self.offline_timers, self.timeout_timers, self.pending_timers, self.grace_timers, self.voice_disconnect_timers]:
             if user_id in timer_dict:
                 timer_dict[user_id].cancel()
                 del timer_dict[user_id]
@@ -467,6 +470,22 @@ class ReadyManager(commands.Cog):
                 del self.grace_timers[user_id]
         except asyncio.CancelledError:
             pass
+    
+    async def auto_remove_voice_disconnect(self, user_id: int, guild: discord.Guild):
+        """Retire le joueur 30 minutes après avoir quitté un salon vocal."""
+        try:
+            await asyncio.sleep(30 * 60) # 30 minutes
+            
+            # Le temps est écoulé, on le retire
+            await self._remove_ready_player(user_id, guild)
+            
+            # On nettoie tous ses autres chronos potentiels proprement
+            self.cancel_all_timers(user_id)
+            
+            # On met à jour l'annonce
+            await self.update_announcement(guild)
+        except asyncio.CancelledError:
+            pass # Le timer a été annulé car le joueur a rejoint un vocal
 
     async def delayed_ready(self, member: discord.Member, delay_sec: int):
         """Attend le délai demandé avant d'essayer d'ajouter le joueur à la liste."""
@@ -656,6 +675,29 @@ class ReadyManager(commands.Cog):
             if user_id in self.offline_timers:
                 self.offline_timers[user_id].cancel()
                 del self.offline_timers[user_id]
+    
+    @commands.Cog.listener()
+    async def on_voice_state_update(self, member: discord.Member, before: discord.VoiceState, after: discord.VoiceState):
+        """Gère le chronomètre anti-oubli de 30 minutes quand un joueur quitte un vocal."""
+        user_id = member.id
+        guild = member.guild
+        
+        # On ignore ceux qui ne sont pas dans la liste des joueurs prêts
+        if user_id not in self.ready_players:
+            return
+
+        # Cas 1 : Le joueur quitte un vocal (il n'est plus dans aucun salon vocal)
+        if before.channel is not None and after.channel is None:
+            # S'il n'a pas déjà un chronomètre en cours, on en lance un
+            if user_id not in self.voice_disconnect_timers:
+                self.voice_disconnect_timers[user_id] = asyncio.create_task(self.auto_remove_voice_disconnect(user_id, guild))
+                
+        # Cas 2 : Le joueur rejoint un vocal (ou change de vocal)
+        elif after.channel is not None:
+            # S'il avait un chronomètre de déconnexion vocale, on l'annule
+            if user_id in self.voice_disconnect_timers:
+                self.voice_disconnect_timers[user_id].cancel()
+                del self.voice_disconnect_timers[user_id]
 
 
 async def setup(bot: commands.Bot):
