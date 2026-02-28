@@ -6,6 +6,7 @@ import json
 import asyncio
 import re
 import random
+import time
 from pathlib import Path
 from dotenv import load_dotenv
 
@@ -44,6 +45,10 @@ class ReadyManager(commands.Cog):
         self.pending_timers: dict[int, asyncio.Task] = {}
         # grace_timers : Gère les 15 minutes accordées à un joueur en retard pour se connecter
         self.grace_timers: dict[int, asyncio.Task] = {}
+        # pending_timers : Gère les joueurs qui ont fait "/ready 1h" (en attente d'ajout)
+        self.pending_timers: dict[int, asyncio.Task] = {}
+        # Stocke le timestamp (l'heure exacte) d'arrivée prévue
+        self.pending_arrivals: dict[int, float] = {}
         
         # Chargement initial des jeux
         load_data()
@@ -308,6 +313,7 @@ class ReadyManager(commands.Cog):
         # 0. Préparation des variables d'image
         lfg_file = None
         ready_members = []
+        common_games = []  # CORRECTION 1 : On l'initialise à vide par défaut !
         
         # Résolution des membres
         for uid in self.ready_players:
@@ -337,6 +343,7 @@ class ReadyManager(commands.Cog):
             ready_mentions = "\n".join([f"<@{uid}>" for uid in self.ready_players])
             embed.add_field(name="Joueurs", value=ready_mentions, inline=False)
             
+            # Ici common_games prend sa vraie valeur car il y a au moins 2 joueurs
             common_games, excluded_users = self.find_common_games()
             
             if not common_games:
@@ -352,13 +359,31 @@ class ReadyManager(commands.Cog):
                     value=f"{excluded_str}\n*Utilisez `/addgame` pour en ajouter puis refaites `/ready`.*", 
                     inline=False
                 )
+
+        # --- AJOUT DES JOUEURS EN ATTENTE (S'applique à tous les embeds) ---
+        if self.pending_arrivals:
+            # On trie le dictionnaire par valeur (le timestamp) croissant
+            sorted_pending = sorted(self.pending_arrivals.items(), key=lambda x: x[1])
+            
+            # Création de la liste des mentions séparées par une virgule
+            mentions = ", ".join([f"<@{uid}>" for uid, ts in sorted_pending])
+            
+            # Récupération du timestamp du tout premier joueur de la liste triée
+            next_ts = int(sorted_pending[0][1])
+            
+            embed.add_field(
+                name="⏳ Joueurs en attente",
+                value=f"{mentions}\n*Prochaine arrivée à <t:{next_ts}:t>*",
+                inline=False
+            )
                 
-            # 2. GÉNÉRATION DE L'IMAGE
-            # On vérifie indépendamment les deux conditions
+        # 2. GÉNÉRATION DE L'IMAGE
+        # CORRECTION 2 : Ce bloc est maintenant désindenté de la condition d'au-dessus !
+        # On ne génère l'image que s'il y a au moins 1 joueur prêt à afficher
+        if len(ready_members) >= 1:
             show_avatars = len(ready_members) <= 5
             show_games = 1 <= len(common_games) <= 3
             
-            # Si au moins l'une des deux conditions est remplie, on génère l'image
             if show_avatars or show_games:
                 buffer = await self._generate_lfg_image(ready_members, common_games)
                 lfg_file = discord.File(buffer, filename="lfg_image.png")
@@ -373,7 +398,6 @@ class ReadyManager(commands.Cog):
                 pass 
                 
         # 4. Envoi et sauvegarde de la NOUVELLE annonce
-        # (L'upload prend un peu de temps, mais l'ancien message est toujours là pour faire patienter)
         if lfg_file:
             new_msg = await channel.send(file=lfg_file, embed=embed)
         else:
@@ -381,7 +405,7 @@ class ReadyManager(commands.Cog):
             
         self._save_last_announcement_id(new_msg.id)
 
-        # 5. Suppression de l'ANCIENNE annonce une fois la nouvelle bien affichée
+        # 5. Suppression de l'ANCIENNE annonce
         if old_msg:
             try:
                 await old_msg.delete()
@@ -397,6 +421,10 @@ class ReadyManager(commands.Cog):
             if user_id in timer_dict:
                 timer_dict[user_id].cancel()
                 del timer_dict[user_id]
+        
+        # On le retire de la liste des arrivées prévues
+        if user_id in self.pending_arrivals:
+            del self.pending_arrivals[user_id]
 
     async def auto_remove_offline(self, user_id: int, guild: discord.Guild):
         """Retire le joueur après 5 minutes de déconnexion."""
@@ -450,6 +478,9 @@ class ReadyManager(commands.Cog):
             
             if user_id in self.pending_timers:
                 del self.pending_timers[user_id]
+            
+            if user_id in self.pending_arrivals:
+                del self.pending_arrivals[user_id]
                 
             updated_member = guild.get_member(user_id)
             if not updated_member: return
@@ -511,26 +542,20 @@ class ReadyManager(commands.Cog):
             delay_sec = self.parse_time(delai)
             
             if delay_sec == 0:
-                await interaction.response.send_message(
-                    "❌ Je n'ai pas compris le format du temps. Utilise par exemple : `15m`, `1h30` ou `90`.", 
-                    ephemeral=True
-                )
+                await interaction.response.send_message("❌ Format non compris (ex: 15m, 1h30).", ephemeral=True)
                 return
-                
             if delay_sec > 21600:
-                await interaction.response.send_message(
-                    "⏳ Tu ne peux pas prévoir une session plus de 6 heures à l'avance.", 
-                    ephemeral=True
-                )
+                await interaction.response.send_message("⏳ Pas plus de 6 heures à l'avance.", ephemeral=True)
                 return
                 
-            # --- NOUVEAU : Si le joueur était déjà prêt, on le retire immédiatement ---
+            # Si le joueur était déjà prêt, on le retire immédiatement
             if user_id in self.ready_players:
                 await self._remove_ready_player(user_id, guild)
-                await self.update_announcement(guild) # On met à jour l'annonce visuellement
-            # --------------------------------------------------------------------------
 
-            # On lance le chronomètre pour le rajouter plus tard (avec le quart d'heure de politesse s'il est hors-ligne)
+            # On calcule et on enregistre l'heure d'arrivée
+            target_time = time.time() + delay_sec
+            self.pending_arrivals[user_id] = target_time
+
             self.pending_timers[user_id] = asyncio.create_task(self.delayed_ready(interaction.user, delay_sec))
             
             heures = delay_sec // 3600
@@ -541,6 +566,9 @@ class ReadyManager(commands.Cog):
                 f"✅ C'est noté ! Je t'ajouterai à la liste dans {temps_str} (si tu es connecté).", 
                 ephemeral=True
             )
+            
+            # On met à jour l'annonce pour afficher la liste d'attente !
+            await self.update_announcement(guild)
             return
                 
         # Cas 2 : Ajout immédiat (sans délai ou délai = 0)
