@@ -37,6 +37,57 @@ class ReadyManager(commands.Cog):
         # Chargement initial des jeux
         load_data()
 
+
+    # --- GESTION DES JOUEURS ET DES RÔLES ---
+
+    async def _update_role(self, user_id: int, add: bool):
+        """Ajoute (add=True) ou retire (add=False) le rôle 'Ready to play' au joueur."""
+        role_id_str = os.getenv('READY_ROLE_ID')
+        if not role_id_str:
+            return # Aucun ID de rôle configuré dans le .env
+            
+        try:
+            role_id = int(role_id_str)
+            # On utilise le channel d'annonce pour retrouver le serveur (guild)
+            channel_id = int(os.getenv('READY_CHANNEL_ID', 0))
+            channel = self.bot.get_channel(channel_id)
+            if not channel:
+                return
+                
+            guild = channel.guild
+            member = guild.get_member(user_id)
+            if not member:
+                return # Le membre n'a pas été trouvé sur le serveur
+                
+            role = guild.get_role(role_id)
+            if not role:
+                print("⚠️ Attention : Le rôle spécifié dans READY_ROLE_ID est introuvable sur le serveur.")
+                return
+                
+            # Modification du rôle
+            if add and role not in member.roles:
+                await member.add_roles(role)
+            elif not add and role in member.roles:
+                await member.remove_roles(role)
+                
+        except discord.Forbidden:
+            print("❌ Erreur : Le bot n'a pas les permissions de modifier ce rôle (vérifiez la hiérarchie des rôles).")
+        except Exception as e:
+            print(f"❌ Erreur lors de la modification du rôle : {e}")
+
+    async def _add_ready_player(self, user_id: int):
+        """Ajoute le joueur à la liste et lui donne le rôle."""
+        if user_id not in self.ready_players:
+            self.ready_players.append(user_id)
+            await self._update_role(user_id, add=True)
+
+    async def _remove_ready_player(self, user_id: int):
+        """Retire le joueur de la liste et lui enlève le rôle."""
+        if user_id in self.ready_players:
+            self.ready_players.remove(user_id)
+            await self._update_role(user_id, add=False)
+
+
     # --- GESTION DE L'ANNONCE ---
 
     def _get_last_announcement_id(self) -> int | None:
@@ -158,8 +209,7 @@ class ReadyManager(commands.Cog):
         try:
             await asyncio.sleep(5 * 60) # 5 minutes
             
-            if user_id in self.ready_players:
-                self.ready_players.remove(user_id)
+            await self._remove_ready_player(user_id)
             
             # Nettoyage global
             if user_id in self.offline_timers: del self.offline_timers[user_id]
@@ -176,8 +226,7 @@ class ReadyManager(commands.Cog):
         try:
             await asyncio.sleep(6 * 60 * 60) # 6 heures
             
-            if user_id in self.ready_players:
-                self.ready_players.remove(user_id)
+            await self._remove_ready_player(user_id)
             
             if user_id in self.timeout_timers: del self.timeout_timers[user_id]
             if user_id in self.offline_timers:
@@ -212,8 +261,7 @@ class ReadyManager(commands.Cog):
             
             # Si le joueur est en ligne, on l'ajoute !
             if updated_member.status != discord.Status.offline:
-                if user_id not in self.ready_players:
-                    self.ready_players.append(user_id)
+                await self._add_ready_player(user_id)
                 self.timeout_timers[user_id] = asyncio.create_task(self.auto_remove_timeout(user_id))
                 await self.update_announcement()
             else:
@@ -290,8 +338,7 @@ class ReadyManager(commands.Cog):
             return
                 
         # Cas 2 : Ajout immédiat
-        if user_id not in self.ready_players:
-            self.ready_players.append(user_id)
+        await self._add_ready_player(user_id)
             
         self.timeout_timers[user_id] = asyncio.create_task(self.auto_remove_timeout(user_id))
         
@@ -307,7 +354,7 @@ class ReadyManager(commands.Cog):
             await interaction.response.send_message("Tu n'étais pas dans la liste.", ephemeral=True)
             return
 
-        self.ready_players.remove(user_id)
+        await self._remove_ready_player(user_id)
         self.cancel_all_timers(user_id)
 
         await interaction.response.send_message("✅ Tu as été retiré de la liste.", ephemeral=True)
@@ -318,6 +365,24 @@ class ReadyManager(commands.Cog):
     async def on_ready(self):
         """Réinitialise la liste au démarrage du bot."""
         self.ready_players.clear()
+        
+        # Nettoyage de sécurité : on retire le rôle à tout le monde au redémarrage
+        # Pour éviter que quelqu'un garde le rôle alors qu'il n'est plus dans la liste interne du bot
+        role_id_str = os.getenv('READY_ROLE_ID')
+        if role_id_str:
+            channel_id = int(os.getenv('READY_CHANNEL_ID', 0))
+            channel = self.bot.get_channel(channel_id)
+            if channel:
+                guild = channel.guild
+                role = guild.get_role(int(role_id_str))
+                if role:
+                    for member in role.members:
+                        try:
+                            await member.remove_roles(role)
+                        except discord.Forbidden:
+                            print("❌ Permissions insuffisantes pour nettoyer les rôles au démarrage.")
+                            break # On arrête la boucle si on n'a pas les droits
+                            
         await self.update_announcement()
 
 
@@ -331,8 +396,7 @@ class ReadyManager(commands.Cog):
             self.grace_timers[user_id].cancel()
             del self.grace_timers[user_id]
             
-            if user_id not in self.ready_players:
-                self.ready_players.append(user_id)
+            await self._add_ready_player(user_id)
             self.timeout_timers[user_id] = asyncio.create_task(self.auto_remove_timeout(user_id))
             await self.update_announcement()
             return
