@@ -58,22 +58,27 @@ class ReadyManager(commands.Cog):
         IMG_HEIGHT = 900 if show_games else 500
         TEXT_COLOR = (255, 255, 255, 255)
         
+        # ---> NOUVEAU : On récupère le dossier exact de ready.py
+        BASE_DIR = Path(__file__).parent
+        
         # 1. Chargement et adaptation de l'image de fond
-        bg_path = Path("./cogs/R2P/assets/background.png")
+        bg_path = BASE_DIR / "assets" / "background.png"
         try:
             bg_img = Image.open(bg_path).convert('RGBA')
-            # ImageOps.fit recadre le fond proprement pour qu'il remplisse l'espace sans se déformer !
             img = ImageOps.fit(bg_img, (IMG_WIDTH, IMG_HEIGHT), Image.Resampling.LANCZOS)
-        except IOError:
+        except IOError as e:
+            print(f"⚠️ Erreur chargement fond : {e}") 
             img = Image.new('RGBA', (IMG_WIDTH, IMG_HEIGHT), color=(24, 25, 28, 255))
             
         draw = ImageDraw.Draw(img)
         
         # 2. Polices
         try:
-            font_title = ImageFont.truetype("./cogs/R2P/assets/titre.ttf", 80)
-            font_starring = ImageFont.truetype("./cogs/R2P/assets/sous_titre.ttf", 45)
-        except IOError:
+            # On convertit en string car certaines vieilles versions de Pillow n'aiment pas les objets Path
+            font_title = ImageFont.truetype(str(BASE_DIR / "assets" / "titre.ttf"), 80)
+            font_starring = ImageFont.truetype(str(BASE_DIR / "assets" / "sous_titre.ttf"), 45)
+        except IOError as e:
+            print(f"⚠️ Erreur chargement polices : {e}")
             font_title = ImageFont.load_default()
             font_starring = ImageFont.load_default()
             
@@ -108,14 +113,12 @@ class ReadyManager(commands.Cog):
                     pos_x = int(start_x + (i * (avatar_size + spacing)))
                     img.paste(avatar_img, (pos_x, 230), mask)
 
-        # 6. POCHETTES DE JEUX (NOUVEAU)
+        # 6. POCHETTES DE JEUX
         if show_games:
-            # Sous-titre "Pick your poison"
             poison_text = "Pick your poison"
             left, top, right, bottom = draw.textbbox((0, 0), poison_text, font=font_starring)
             draw.text(((IMG_WIDTH - (right - left)) / 2, 420), poison_text, font=font_starring, fill=TEXT_COLOR)
             
-            # Paramètres des pochettes
             grid_w, grid_h = 200, 300
             grid_spacing = 50
             total_grid_w = (len(common_games) * grid_w) + ((len(common_games) - 1) * grid_spacing)
@@ -127,7 +130,6 @@ class ReadyManager(commands.Cog):
                     grid_img = Image.open(io.BytesIO(img_bytes)).convert('RGBA')
                     grid_img = ImageOps.fit(grid_img, (grid_w, grid_h), Image.Resampling.LANCZOS)
                     
-                    # Bonus : On ajoute des coins arrondis aux pochettes pour faire plus moderne !
                     mask = Image.new('L', (grid_w, grid_h), 0)
                     ImageDraw.Draw(mask).rounded_rectangle((0, 0, grid_w, grid_h), radius=15, fill=255)
                     
