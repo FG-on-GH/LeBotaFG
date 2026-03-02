@@ -6,6 +6,7 @@
 # FG added those
 /cogs/R2P/*.json
 /cogs/R2P/Assets/*
+/cogs/*.jsons
 
 
 # User-specific files
