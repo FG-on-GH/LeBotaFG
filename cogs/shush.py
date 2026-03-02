@@ -3,6 +3,7 @@ from discord.ext import commands
 from discord import app_commands
 import json
 import os
+import random
 from datetime import datetime
 
 class ChuchoterCog(commands.Cog):
@@ -10,7 +11,7 @@ class ChuchoterCog(commands.Cog):
         self.bot = bot
         self.fichier_logs = "cogs/shush_logs.json" # Nom du fichier de sauvegarde
 
-    def sauvegarder_log(self, interaction: discord.Interaction, message: str):
+    def save_log(self, interaction: discord.Interaction, message: str):
         """Fonction qui gère la sauvegarde dans le fichier JSON."""
         
         new_log = {
@@ -40,18 +41,20 @@ class ChuchoterCog(commands.Cog):
             # indent=4 permet de rendre le fichier lisible pour un humain
             json.dump(logs, f, indent=4, ensure_ascii=False)
 
-    @app_commands.command(name="chuchoter", description="Envoie un message de façon 100% anonyme.")
-    @app_commands.describe(message="Le message que tu veux envoyer anonymement")
+
+    @app_commands.command(name="chuchoter", description="Envoie un message 83,33% anonyme !")
+    @app_commands.describe(message="Le message que tu veux envoyer")
     async def chuchoter(self, interaction: discord.Interaction, message: str):
         
-        # On sauvegarde le log avant d'envoyer le message
-        self.sauvegarder_log(interaction, message)
+        self.save_log(interaction, message)
+        chance = random.randint(1, 6)
         
-        # On valide l'interaction de manière invisible pour les autres
-        await interaction.response.send_message("🤫 Ton message a bien été envoyé !", ephemeral=True)
-        
-        # Le bot envoie le message publiquement
-        await interaction.channel.send(f'Quelqu\'un m\'a chuchoté : "{message}"')
+        await interaction.response.send_message("🤫 Ton message a bien été envoyé en mode ninja !", ephemeral=True)
+           
+        if chance == 1:
+            await interaction.channel.send(f'Quelqu\'un m\'a chuchoté : "{message}"\nJe balance, c\'est {interaction.user.mention} !')
+        else:
+            await interaction.channel.send(f'Quelqu\'un m\'a chuchoté : "{message}"')
 
 async def setup(bot):
     await bot.add_cog(ChuchoterCog(bot))
