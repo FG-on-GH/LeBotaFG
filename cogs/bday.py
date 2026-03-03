@@ -12,11 +12,11 @@ class BDay(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         # On lance la tâche en arrière-plan dès que le Cog est chargé
-        self.check_annivs.start()
+        self.check_dates.start()
 
     def cog_unload(self):
         # On coupe proprement la tâche si le Cog est déchargé
-        self.check_annivs.cancel()
+        self.check_dates.cancel()
 
     # --- GESTION DU FICHIER JSON ---
     def load_data(self):
