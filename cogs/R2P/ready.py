@@ -521,27 +521,33 @@ class ReadyManager(commands.Cog):
     # --- UTILITAIRES ---
 
     def parse_time(self, time_str: str) -> int:
-        """Convertit une chaîne de temps (1h30, 90m) en secondes."""
+        """Convertit une chaîne de temps (1h30, 90m, 1.5h) en secondes."""
         if not time_str: return 0
             
         time_str = time_str.lower().replace(',', '.')
         hours, mins = 0.0, 0.0
         
+        # 1. On cherche d'abord les heures explicites (1h, 1.5 heures)
         h_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:h|heure|heures)', time_str)
         if h_match:
             hours = float(h_match.group(1))
+            # On retire ce qu'on a trouvé de la chaîne
             time_str = time_str[:h_match.start()] + time_str[h_match.end():]
             
+        # 2. On cherche ensuite les minutes explicites (30m, 90 mins)
         m_match = re.search(r'(\d+(?:\.\d+)?)\s*(?:m|min|mins|minute|minutes)', time_str)
         if m_match:
             mins = float(m_match.group(1))
             time_str = time_str[:m_match.start()] + time_str[m_match.end():]
             
-        if hours == 0 and mins == 0:
+        # 3. LE CORRECTIF : Si on a trouvé des heures, mais pas de "m" (ex: 1h30)
+        # ou qu'il s'agit juste d'un nombre (ex: 90)
+        if mins == 0.0:
             num_match = re.search(r'(\d+(?:\.\d+)?)', time_str)
             if num_match:
                 mins = float(num_match.group(1))
                 
+        # 4. Conversion totale en secondes
         return int((hours * 3600) + (mins * 60))
 
 
