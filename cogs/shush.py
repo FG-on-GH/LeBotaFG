@@ -6,7 +6,7 @@ import os
 import random
 from datetime import datetime
 
-class ChuchoterCog(commands.Cog):
+class ShushCog(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
         self.fichier_logs = "cogs/shush_logs.json" # Nom du fichier de sauvegarde
@@ -49,7 +49,7 @@ class ChuchoterCog(commands.Cog):
         self.save_log(interaction, message)
         chance = random.randint(1, 6)
         
-        await interaction.response.send_message("🤫 Ton message a bien été envoyé en mode ninja !", ephemeral=True)
+        await interaction.response.send_message("🤫 Ton message a bien été envoyé !", ephemeral=True)
            
         if chance == 1:
             await interaction.channel.send(f'Quelqu\'un m\'a chuchoté : "{message}"\nJe balance, c\'est {interaction.user.mention} !')
@@ -57,4 +57,4 @@ class ChuchoterCog(commands.Cog):
             await interaction.channel.send(f'Quelqu\'un m\'a chuchoté : "{message}"')
 
 async def setup(bot):
-    await bot.add_cog(ChuchoterCog(bot))
+    await bot.add_cog(ShushCog(bot))
