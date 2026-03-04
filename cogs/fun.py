@@ -11,7 +11,7 @@ DATA_FILE = "cogs/pseudos.json"
 class Quoifeur(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
-        
+        feur_role_id = os.getenv('FEUR_ROLE_ID')
         self.reponses_quoi = [
             "feur !",
             "drilatère !",
