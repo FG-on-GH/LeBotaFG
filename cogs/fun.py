@@ -34,31 +34,46 @@ class Quoifeur(commands.Cog):
 
     # --- ÉVÉNEMENT AU DÉMARRAGE DU COG ---
     async def cog_load(self):
-        # Cette fonction s'exécute automatiquement quand le fichier est chargé (au démarrage)
+        # On lance la tâche en arrière-plan pour ne pas bloquer le démarrage du bot
+        self.bot.loop.create_task(self.restaurer_pseudos_au_demarrage())
+
+    async def restaurer_pseudos_au_demarrage(self):
+        # On attend que le bot soit totalement connecté à Discord
+        await self.bot.wait_until_ready()
+        
         data = self.load_pseudos()
         if not data:
             return # Rien à restaurer
 
         print("🔄 Restauration des pseudos suite à un redémarrage...")
+        
+        # On copie les clés dans une liste pour pouvoir modifier le dictionnaire original en toute sécurité
+        cles_a_supprimer = []
+
         for key, ancien_nom in data.items():
             try:
-                # La clé est sous la forme "guild_id-user_id"
                 guild_id_str, user_id_str = key.split("-")
                 guild = self.bot.get_guild(int(guild_id_str))
                 
                 if guild:
-                    # On cherche le membre (dans le cache ou via l'API si le cache est vide)
                     member = guild.get_member(int(user_id_str)) or await guild.fetch_member(int(user_id_str))
                     if member:
+                        # Si ancien_nom est None, ça remet le nom par défaut de l'utilisateur
                         await member.edit(nick=ancien_nom)
                         print(f"✅ Pseudo de {member.name} restauré.")
+                        cles_a_supprimer.append(key)
             except discord.Forbidden:
                 print(f"❌ Permission manquante pour restaurer {key}.")
+                cles_a_supprimer.append(key) # On supprime quand même pour ne pas bloquer en boucle
             except Exception as e:
                 print(f"⚠️ Erreur avec {key} : {e}")
 
-        # Une fois tout le monde restauré, on vide le fichier
-        self.save_pseudos({})
+        # On nettoie le fichier JSON
+        for cle in cles_a_supprimer:
+            if cle in data:
+                del data[cle]
+        
+        self.save_pseudos(data)
 
     # --- ÉCOUTEUR DE MESSAGES ---
     @commands.Cog.listener()
@@ -90,8 +105,8 @@ class Quoifeur(commands.Cog):
 
                     # Puis on change le pseudo
                     await message.author.edit(nick=nouveau_nom)
-                    await message.add_reaction("👋")
 
+                    
                     # Chronomètre en arrière-plan
                     async def restaurer_pseudo():
                         heures = random.randint(2, 12)
