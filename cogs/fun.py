@@ -14,11 +14,15 @@ class Quoifeur(commands.Cog):
         
         self.reponses_quoi = [
             "feur !",
-            "chi !",
             "drilatère !",
-            "ffeur !",
-            "cou !",
-            "artz !"
+            "feur !",
+            "quoicoubeh !",
+            "feur"
+            "ffffffffffffffffffffffffffffffffffffffffffeur",
+            "feur !",
+            "( ͡° ͜ʖ ͡°) chuis sympa pour cette fois",
+            "feur !",
+            f"@<{feur_role_id}> je te le laisse celui là"
         ]
 
     # --- GESTION DU FICHIER JSON ---
@@ -84,53 +88,67 @@ class Quoifeur(commands.Cog):
         content = message.content
 
         # ---------------------------------------------------------
-        # JE SUIS / JE M'APPELLE
+        # BLAGUE "JE SUIS / JE M'APPELLE"
         # ---------------------------------------------------------
         match_nom = re.match(r"^(?:je\s+suis|je\s+m['’\s]?appelle)\s+(.+)", content, re.IGNORECASE)
         
         if match_nom:
-            data = self.load_pseudos()
             cle = f"{message.guild.id}-{message.author.id}"
-
-            # Si la personne est déjà dans le fichier, on ne fait rien
-            # Sinon, elle pourrait écraser son vrai pseudo de secours par son pseudo de blague !
-            if cle not in data:
-                nouveau_nom = match_nom.group(1).strip()[:32]
-                ancien_nom = message.author.nick
+            data = self.load_pseudos()
+            
+            # 1. On détermine le vrai pseudo d'origine
+            if cle in data:
+                # Si la personne est déjà dans le fichier, on garde le VRAI nom intact
+                ancien_nom = data[cle] 
+            else:
+                # Si c'est la première fois, on prend son pseudo actuel
+                ancien_nom = message.author.nick 
                 
-                try:
-                    # On sauvegarde d'abord dans le JSON
+            nouveau_nom = match_nom.group(1).strip()[:32]
+
+            try:
+                # 2. On change le pseudo
+                await message.author.edit(nick=nouveau_nom)
+                await message.add_reaction("👋")
+
+                # 3. Si ça a réussi, on sauvegarde dans le JSON (seulement si c'est nouveau)
+                if cle not in data:
                     data[cle] = ancien_nom
                     self.save_pseudos(data)
 
-                    # Puis on change le pseudo
-                    await message.author.edit(nick=nouveau_nom)
+                # 4. Gestion des chronomètres (on annule l'ancien si la personne refait la blague)
+                if cle in self.timers:
+                    self.timers[cle].cancel()
 
+                # 5. On crée le nouveau compte à rebours
+                async def restaurer_pseudo():
+                    heures = random.randint(2, 12)
+                    await asyncio.sleep(heures * 3600)
                     
-                    # Chronomètre en arrière-plan
-                    async def restaurer_pseudo():
-                        heures = random.randint(2, 12)
-                        await asyncio.sleep(heures * 3600)
+                    try:
+                        # Fin du temps : on restaure
+                        await message.author.edit(nick=ancien_nom)
                         
-                        try:
-                            # On restaure le pseudo
-                            await message.author.edit(nick=ancien_nom)
+                        # On nettoie le fichier JSON
+                        donnees_actuelles = self.load_pseudos()
+                        if cle in donnees_actuelles:
+                            del donnees_actuelles[cle]
+                            self.save_pseudos(donnees_actuelles)
                             
-                            # On retire la personne du fichier JSON car le timer est fini
-                            donnees_actuelles = self.load_pseudos()
-                            if cle in donnees_actuelles:
-                                del donnees_actuelles[cle]
-                                self.save_pseudos(donnees_actuelles)
-                                
-                        except discord.Forbidden:
-                            pass 
+                    except discord.Forbidden:
+                        pass 
+                    finally:
+                        # On retire le timer de la mémoire
+                        if cle in self.timers:
+                            del self.timers[cle]
 
-                    self.bot.loop.create_task(restaurer_pseudo())
+                # On lance la tâche et on la stocke dans notre dictionnaire self.timers
+                tache = self.bot.loop.create_task(restaurer_pseudo())
+                self.timers[cle] = tache
 
-                except discord.Forbidden:
-                    # Si le bot n'a pas les droits, on annule l'enregistrement dans le JSON
-                    del data[cle]
-                    self.save_pseudos(data)
+            except discord.Forbidden:
+                # Le bot n'a pas les permissions (ex: membre trop haut gradé)
+                pass
 
         # ---------------------------------------------------------
         # QUOI / OUI / NON
