@@ -44,9 +44,6 @@ class Fun(commands.Cog):
             try:
                 # On change le pseudo
                 await message.author.edit(nick=nouveau_nom)
-                
-                # On réagit au message pour montrer que le bot a frappé
-                await message.add_reaction("👋")
 
                 # Fonction asynchrone pour attendre et remettre l'ancien pseudo
                 async def restaurer_pseudo():
@@ -67,6 +64,7 @@ class Fun(commands.Cog):
 
             except discord.Forbidden:
                 # Le bot n'a pas la permission (ex: proprio serv)
+                print("Rename forbidden")
                 pass
 
         # Expression régulière (Regex) pour détecter le "quoi"
